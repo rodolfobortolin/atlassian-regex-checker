@@ -1,29 +1,43 @@
 import os
 import csv
-import re
+import regex as re 
 import logging
 import requests
+import sys
 from requests.auth import HTTPBasicAuth
 
 config = {
-    'email': 'admin', 
-    'token' : "admin",  
-    'base_url' : "http://localhost:8080",
-    'api_version': 2
+    'email': '', 
+    'token' : "",  
+    'base_url' : "https://<domain>.atlassian.net",
+    'api_version': 3
 }
 
-env = 'server'
+env = 'cloud'
+
+regex_patterns_file = 'regex_patterns.csv'
 
 
 # Setup basic configuration for logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s: %(message)s')
 
 # Constants
-BASE_URL = f"{config['base_url']}"
 AUTH = HTTPBasicAuth(config['email'], config['token'])
 HEADERS = {"Accept": "application/json"}
-REGEX_PATTERNS = ["sk-[a-zA-Z0-9]{40}"]  # List of regex patterns
 
+def load_regex_patterns(file_path):
+    patterns = []
+    if os.path.exists(file_path):
+        with open(file_path, mode='r', newline='') as file:
+            reader = csv.DictReader(file, delimiter=';')  # Specify the delimiter
+            for row in reader:
+                # Corrected accessing dictionary key
+                patterns.append(row['Regular Expression'])
+    else:
+        logging.error(f"File '{file_path}' does not exist.")
+    return patterns
+
+REGEX_PATTERNS = load_regex_patterns(os.path.join(os.getcwd(), regex_patterns_file))
 # CSV files for saving data
 PROCESSED_PROJECTS_FILE = 'processed_projects.csv'
 FOUND_ISSUES_FILE = 'found_issues.csv'
@@ -34,110 +48,115 @@ if not os.path.exists(PROCESSED_PROJECTS_FILE):
         writer = csv.writer(file)
         writer.writerow(['Project Key'])
 
-# Helper function to write to CSV
 def append_to_csv(file_name, row):
     with open(file_name, mode='a', newline='') as file:
         writer = csv.writer(file)
         writer.writerow(row)
 
 def extract_text_from_node(node):
-    """
-    Recursively extract text from a node in the Atlassian document format.
-    """
     text = ''
-    
-    # Check if the node itself contains a 'text' field
     if 'text' in node:
         return node['text']
-    
-    # If the node contains 'content', recursively extract text from its children
     if 'content' in node:
         for child in node['content']:
             text += extract_text_from_node(child)
-    
     return text
 
 def extract_text(content):
-    """
-    Extract and concatenate text from the 'content' field of the Atlassian document format.
-    """
     full_text = ''
     for node in content['content']:
         full_text += extract_text_from_node(node)
     return full_text
 
 def check_patterns(text, issue_key, type, url):
-    for pattern in REGEX_PATTERNS:
-        if re.search(pattern, text):
-            append_to_csv(FOUND_ISSUES_FILE, [issue_key, type, url])
-            logging.info(f"Found pattern '{pattern}' in issue {issue_key}")
-
-# Function to process each project with pagination
-def process_projects():
+    if text is not None and text != "":
+        for pattern in REGEX_PATTERNS:
+            if re.search(pattern, text):
+                append_to_csv(FOUND_ISSUES_FILE, [issue_key, type, url])
+                logging.info(f"Found pattern '{pattern}' in issue {issue_key}")
+                
+def process_projects(project_key=None):
     start_at = 0
     max_results = 50
-    more_projects = True
-
-    while more_projects:
-        projects_response = requests.get(f"{BASE_URL}/rest/api/{config['api_version']}/project?startAt={start_at}&maxResults={max_results}", auth=AUTH, headers=HEADERS)
-        projects = projects_response.json()
-        more_projects = len(projects) == max_results  # Check if we potentially have more projects
-        
-        for project in projects:
-            project_key = project['key']
-            # Check if the project has been processed
-            with open(PROCESSED_PROJECTS_FILE, mode='r') as file:
-                processed_projects = [row[0] for row in csv.reader(file)]
-            if project_key in processed_projects:
-                logging.info(f"Skipping already processed project: {project_key}")
-                continue
+    if project_key:
+        process_issues(project_key)
+        append_to_csv(PROCESSED_PROJECTS_FILE, [project_key])
+    else:
+        more_projects = True
+        while more_projects:
+            projects_response = requests.get(f"{config['base_url']}/rest/api/{config['api_version']}/project?startAt={start_at}&maxResults={max_results}", auth=AUTH, headers=HEADERS)
+            projects = projects_response.json()
+            more_projects = len(projects) == max_results
             
-            process_issues(project_key)
-            # Mark project as processed
-            append_to_csv(PROCESSED_PROJECTS_FILE, [project_key])
-        
-        start_at += max_results  # Update start_at for next batch of projects
-        
-# Function to fetch and process issues for a given project
+            for project in projects:
+                project_key = project['key']
+                with open(PROCESSED_PROJECTS_FILE, mode='r') as file:
+                    processed_projects = [row[0] for row in csv.reader(file)]
+                if project_key in processed_projects:
+                    logging.info(f"Skipping already processed project: {project_key}")
+                    continue
+                
+                process_issues(project_key)
+                append_to_csv(PROCESSED_PROJECTS_FILE, [project_key])
+            
+            start_at += max_results
+
+def check_description_history(issue_key):
+
+    url = f"{config['base_url']}/rest/api/{config['api_version']}/issue/{issue_key}/changelog"
+
+    response = requests.get(url, auth=AUTH, headers=HEADERS)
+    if response.status_code == 200:
+        changes = response.json()
+        for history_item in changes['values']:
+            for item in history_item['items']:
+                if item['field'] == 'description':
+                    old_description = item.get('fromString', '')
+                    #new_description = item.get('toString', '')
+                    check_patterns(old_description, issue_key, "comment", f"{config['base_url']}/browse/{issue_key}")
+
+    else:
+        logging.error(f"Failed to retrieve changelog: {response.status_code}")
+        logging.error(response.text)
+
+
 def process_issues(project_key):
     start_at = 0
     max_results = 50
     issues_found = True
-
     while issues_found:
-        issues_response = requests.get(f"{BASE_URL}/rest/api/{config['api_version']}/search?jql=project=\'{project_key}\'&startAt={start_at}&maxResults={max_results}", auth=AUTH, headers=HEADERS)
+        issues_response = requests.get(f"{config['base_url']}/rest/api/{config['api_version']}/search?jql=project=\'{project_key}\'&startAt={start_at}&maxResults={max_results}", auth=AUTH, headers=HEADERS)
         issues = issues_response.json()
         issues_found = 'issues' in issues and len(issues['issues']) > 0
         
         for issue in issues['issues']:
             issue_key = issue['key']
             logging.info(f"Processing issue {issue_key} in project {project_key}")
-            
-            # Safely get the description
             description = issue['fields'].get('description', '')
-            
-            # Check if the description is empty
-            if not description:
-                logging.info(f"Issue {issue_key} has an empty description.")
-            else:
-                # Proceed with pattern checks if description is not empty
+            if description:
+                logging.info("Description...")
                 if env == 'cloud':
-                    check_patterns(extract_text(description), issue_key, "description", f"{BASE_URL}/browse/{issue_key}")
+                    check_patterns(extract_text(description), issue_key, "description", f"{config['base_url']}/browse/{issue_key}")
                 else:
-                    check_patterns(description, issue_key, "description", f"{BASE_URL}/browse/{issue_key}")
-
-            # Fetch and process comments
-            comments_response = requests.get(f"{BASE_URL}/rest/api/{config['api_version']}/issue/{issue_key}/comment", auth=AUTH, headers=HEADERS)
+                    check_patterns(description, issue_key, "description", f"{config['base_url']}/browse/{issue_key}")
+            
+            comments_response = requests.get(f"{config['base_url']}/rest/api/{config['api_version']}/issue/{issue_key}/comment", auth=AUTH, headers=HEADERS)
             comments = comments_response.json()
             
-            for comment in comments.get('comments', []):  # Handle cases where 'comments' may be missing
+            logging.info(f"{comments['total']} comment(s)...")
+            
+            for comment in comments.get('comments', []):
                 comment_content = comment.get('body', {})
                 if env == 'cloud':
-                    check_patterns(extract_text(comment_content), issue_key, "comment", f"{BASE_URL}/browse/{issue_key}")
+                    check_patterns(extract_text(comment_content), issue_key, "comment", f"{config['base_url']}/browse/{issue_key}")
                 else:
-                    check_patterns(comment_content, issue_key, "comment", comments_response.url)
+                    check_patterns(comment_content, issue_key, "comment", f"{config['base_url']}/browse/{issue_key}")
+            logging.info("History...\n")
+            check_description_history(issue_key)
 
-        start_at += max_results  # Prepare the next page of results
+        start_at += max_results
         
 if __name__ == '__main__':
-    process_projects()
+    project_key = "ITSAMPLE"  
+    process_projects(project_key)
+    #process_projects()
