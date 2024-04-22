@@ -21,14 +21,15 @@ env = 'server' # change to cloud if the script will run in Jira Cloud
 ```
 
 ### Defining REGEX_PATTERNS
-Define your own regex patterns to search within issue descriptions and comments. Add them to the `REGEX_PATTERNS` list:
+Define your own regex patterns to search within issue descriptions and comments. Add them to the `regex_patterns.csv`:
 
-```python
-REGEX_PATTERNS = [
-    "sk-[a-zA-Z0-9]{40}", #example of regex that detects OpenAI API Keys
-    "regex-2",
-    "regex-3",
-    ]  # List of regex patterns
+```csv
+Rule Name,Regular Expression
+AWS_CLIENT_ID,A(?:BIA|CCA|GPA|IDA|IPA|KIA|NPA|NVA|PKA|ROA|SCA|SIA|3T[A-Z0-9])[A-Z0-9]{16}
+AWS_MWS_KEY,amzn\.mws\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
+AWS_SECRET_ACCESS_KEY,"(?i)aws.{0,20}?(?-i)[^0-9a-zA-Z/+!@#$%^&*]([0-9a-zA-Z/+]{40})(?=[^0-9a-zA-Z/+!@#$%^&*]|$)"
+RSA_PRIVATE_KEY,-----BEGIN RSA PRIVATE KEY-----
+SSH_PRIVATE_KEY,-----BEGIN OPENSSH PRIVATE KEY-----
 ```
 
 ### found_issues.csv Contents
