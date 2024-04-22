@@ -5,6 +5,11 @@ This guide explains how to use a Python script designed to interface with a Jira
 ### Saving Processed Projects
 The script maintains a record of processed projects in a file named `processed_projects.csv`. If the script is interrupted, it won't reprocess the projects listed in this file when restarted.
 
+### Install regex Python module
+```bash
+pip install regex
+```
+
 ### Configuration
 You'll need to provide the following configurations in the `config` dictionary within the script:
 
