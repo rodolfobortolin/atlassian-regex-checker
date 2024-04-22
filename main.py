@@ -1,13 +1,13 @@
 import os
 import csv
-import regex as re 
+import regex as re  # Import the regex module
 import logging
 import requests
 import sys
 from requests.auth import HTTPBasicAuth
 
 config = {
-    'email': '', 
+    'email': '<email>', 
     'token' : "",  
     'base_url' : "https://<domain>.atlassian.net",
     'api_version': 3
@@ -29,7 +29,7 @@ def load_regex_patterns(file_path):
     patterns = []
     if os.path.exists(file_path):
         with open(file_path, mode='r', newline='') as file:
-            reader = csv.DictReader(file, delimiter=';')  # Specify the delimiter
+            reader = csv.DictReader(file, delimiter=',')  # Specify the delimiter
             for row in reader:
                 # Corrected accessing dictionary key
                 patterns.append(row['Regular Expression'])
@@ -158,5 +158,5 @@ def process_issues(project_key):
         
 if __name__ == '__main__':
     project_key = "ITSAMPLE"  
-    process_projects(project_key)
-    #process_projects()
+    #process_projects(project_key)
+    process_projects()
