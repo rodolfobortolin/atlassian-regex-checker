@@ -17,6 +17,7 @@ config = {
 
 env = 'cloud'
 regex_patterns_file = 'regex_patterns.csv'
+log_file = 'application.log'  # Define the log file name
 
 AUTH = HTTPBasicAuth(config['email'], config['token'])
 HEADERS = {"Accept": "application/json"}
@@ -24,8 +25,13 @@ PROCESSED_PROJECTS_FILE = 'processed_projects.csv'
 FOUND_ISSUES_FILE = 'found_issues.csv'
 RUNNING_PROJECTS_FILE = 'running_projects.txt'
 
-
+# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s: %(message)s')
+logger = logging.getLogger()
+file_handler = logging.FileHandler(log_file)  
+file_handler.setLevel(logging.INFO)  
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s: %(message)s'))  
+logger.addHandler(file_handler) 
 
 # Load processed projects from file
 def load_processed_projects():
@@ -44,14 +50,12 @@ def load_regex_patterns(file_path):
     if os.path.exists(file_path):
         with open(file_path, mode='r', newline='') as file:
             reader = csv.DictReader(file, delimiter=',')
-            logging.info("Detected CSV Headers:", reader.fieldnames)
+            logging.info("Detected CSV Headers: %s", reader.fieldnames)
             for row in reader:
-                # Save both the rule name and the regex pattern
                 patterns.append((row['Rule Name'], row['Regular Expression']))
     else:
         logging.error(f"File '{file_path}' does not exist.")
     return patterns
-
 
 PROCESSED_PROJECTS = load_processed_projects()
 REGEX_PATTERNS = load_regex_patterns(os.path.join(os.getcwd(), regex_patterns_file))
@@ -114,9 +118,11 @@ def check_patterns(text, issue_key, type, url):
     if text:
         for rule_name, pattern in REGEX_PATTERNS:
             if re.search(pattern, text):
-                # Save rule name along with other details
+                separator = "*" * 50  # Creates a line of asterisks
                 append_to_csv(FOUND_ISSUES_FILE, [issue_key, rule_name, type, url])
-                logging.info(f"Found {rule_name} pattern in issue {issue_key}")
+                logging.warning(separator)
+                logging.warning(f"!!! ALERT: Found {rule_name} pattern in issue {issue_key}  !!!")
+                logging.warning(separator)
                 
 # Main functions to process projects and issues
 def worker(project_queue):
@@ -216,3 +222,4 @@ def process_projects(thread_count=50):
 if __name__ == '__main__':
     thread_count = int(sys.argv[1]) if len(sys.argv) > 1 else 5  # Default to 5 threads if not specified
     process_projects(thread_count)
+
