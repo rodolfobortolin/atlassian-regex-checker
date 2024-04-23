@@ -1,4 +1,3 @@
-
 import os
 import csv
 import regex as re
@@ -17,7 +16,6 @@ CONFIG = {
     'email': '<email>', 
     'token' : "",  
     'base_url' : "https://<domain>.atlassian.net",
-    'api_version': 3
 }
 
 REGEX_PATTERNS_FILE = 'regex_patterns.csv'
@@ -133,14 +131,15 @@ def process_attachments(issue_key):
         issue_details = response.json()
         attachments = issue_details['fields'].get('attachment', [])
         for attachment in attachments:
-            download_url = attachment['content']
-            try:
-                file_response = requests.get(download_url, auth=AUTH, headers=HEADERS)
-                file_response.raise_for_status()
-                file_content = file_response.text
-                check_patterns(file_content, issue_key, 'attachment', attachment['self'])
-            except requests.exceptions.RequestException as e:
-                logging.error(f"Failed to download attachment {attachment['filename']} from issue {issue_key}: {e}")
+            if attachment['filename'].endswith(('csv', 'txt', 'json', 'yaml', 'yml', 'md', 'conf', 'ini', 'sh', 'bat', 'ps1', 'log')):
+                download_url = attachment['content']
+                try:
+                    file_response = requests.get(download_url, auth=AUTH, headers=HEADERS)
+                    file_response.raise_for_status()
+                    file_content = file_response.text
+                    check_patterns(file_content, issue_key, 'attachment', f"{CONFIG['base_url']}/browse/{issue_key}")
+                except requests.exceptions.RequestException as e:
+                    logging.error(f"Failed to download attachment {attachment['filename']} from issue {issue_key}: {e}")
     except requests.exceptions.RequestException as e:
         logging.error(f"Failed to retrieve issue details for {issue_key}: {e}")
  
@@ -169,7 +168,7 @@ def process_history(issue_key):
             for item in history_item['items']:
                 if item['field'] == 'description':
                     old_description = item.get('fromString', '')
-                    check_patterns(old_description, issue_key, "comment", f"{CONFIG['base_url']}/browse/{issue_key}")
+                    check_patterns(old_description, issue_key, "description history", f"{CONFIG['base_url']}/browse/{issue_key}")
     else:
         logging.error(f"Failed to retrieve changelog: {response.status_code}")
         logging.error(response.text)
