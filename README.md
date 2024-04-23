@@ -25,6 +25,17 @@ env = 'server' # change to cloud if the script will run in Jira Cloud
 
 ```
 
+## Managing Active Projects
+
+The script includes a mechanism to manage currently running projects using a file named running_projects.txt:
+
+- Addition: When a project starts, its key is added to running_projects.txt.
+- Removal: Once the project is no longer active, its key is removed from the file.
+- Check: Before processing, the script checks if a project is listed as active to avoid reprocessing.
+
+## Saving Processed Projects
+The script maintains a record of processed projects in a file named processed_projects.csv. Projects are added to this file after they have been processed. If the script is interrupted, it won't reprocess the projects listed in this file when restarted.
+
 ### Defining REGEX_PATTERNS
 Define your own regex patterns to search within issue descriptions and comments. Add them to the `regex_patterns.csv`:
 
