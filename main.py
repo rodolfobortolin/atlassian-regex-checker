@@ -114,7 +114,6 @@ def load_regex_patterns(file_path):
         logging.error(f"Error loading regex patterns from '{file_path}': {e}")
     return patterns
 
-
 PROCESSED_PROJECTS = load_processed_projects()
 REGEX_PATTERNS = load_regex_patterns(os.path.join(os.getcwd(), REGEX_PATTERNS_FILE))
 
