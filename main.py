@@ -1,10 +1,12 @@
 import os
 import csv
-import regex as re  # Import the regex module
+import regex as re
 import logging
 import requests
 import sys
 from requests.auth import HTTPBasicAuth
+from threading import Thread
+from queue import Queue
 
 config = {
     'email': '<email>', 
@@ -14,45 +16,84 @@ config = {
 }
 
 env = 'cloud'
-
 regex_patterns_file = 'regex_patterns.csv'
 
-
-# Setup basic configuration for logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s: %(message)s')
-
-# Constants
 AUTH = HTTPBasicAuth(config['email'], config['token'])
 HEADERS = {"Accept": "application/json"}
+PROCESSED_PROJECTS_FILE = 'processed_projects.csv'
+FOUND_ISSUES_FILE = 'found_issues.csv'
+RUNNING_PROJECTS_FILE = 'running_projects.txt'
 
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s: %(message)s')
+
+# Load processed projects from file
+def load_processed_projects():
+    processed = set()
+    if os.path.exists(PROCESSED_PROJECTS_FILE):
+        with open(PROCESSED_PROJECTS_FILE, mode='r', newline='') as file:
+            reader = csv.reader(file)
+            next(reader, None)  # Skip header
+            for row in reader:
+                processed.add(row[0])
+    return processed
+
+# Load regex patterns from file along with rule names
 def load_regex_patterns(file_path):
     patterns = []
     if os.path.exists(file_path):
         with open(file_path, mode='r', newline='') as file:
-            reader = csv.DictReader(file, delimiter=',')  # Specify the delimiter
+            reader = csv.DictReader(file, delimiter=',')
+            logging.info("Detected CSV Headers:", reader.fieldnames)
             for row in reader:
-                # Corrected accessing dictionary key
-                patterns.append(row['Regular Expression'])
+                # Save both the rule name and the regex pattern
+                patterns.append((row['Rule Name'], row['Regular Expression']))
     else:
         logging.error(f"File '{file_path}' does not exist.")
     return patterns
 
-REGEX_PATTERNS = load_regex_patterns(os.path.join(os.getcwd(), regex_patterns_file))
-# CSV files for saving data
-PROCESSED_PROJECTS_FILE = 'processed_projects.csv'
-FOUND_ISSUES_FILE = 'found_issues.csv'
 
-# Check if the processed projects file exists, if not create it
+PROCESSED_PROJECTS = load_processed_projects()
+REGEX_PATTERNS = load_regex_patterns(os.path.join(os.getcwd(), regex_patterns_file))
+
+def add_to_running_projects(project_key):
+    """Add a project key to the running projects file."""
+    with open(RUNNING_PROJECTS_FILE, 'a') as file:
+        file.write(project_key + '\n')
+
+def remove_from_running_projects(project_key):
+    """Remove a project key from the running projects file."""
+    with open(RUNNING_PROJECTS_FILE, 'r') as file:
+        lines = file.readlines()
+    with open(RUNNING_PROJECTS_FILE, 'w') as file:
+        for line in lines:
+            if line.strip() != project_key:
+                file.write(line)
+
+def is_project_running(project_key):
+    """Check if a project key is in the running projects file."""
+    try:
+        with open(RUNNING_PROJECTS_FILE, 'r') as file:
+            for line in file:
+                if line.strip() == project_key:
+                    return True
+    except FileNotFoundError:
+        return False
+    return False
+
+# Initialize files if not present
 if not os.path.exists(PROCESSED_PROJECTS_FILE):
     with open(PROCESSED_PROJECTS_FILE, mode='w', newline='') as file:
         writer = csv.writer(file)
         writer.writerow(['Project Key'])
 
+# Append rows to CSV files
 def append_to_csv(file_name, row):
     with open(file_name, mode='a', newline='') as file:
         writer = csv.writer(file)
         writer.writerow(row)
-
+        
+# Text extraction and pattern checking functions
 def extract_text_from_node(node):
     text = ''
     if 'text' in node:
@@ -68,39 +109,28 @@ def extract_text(content):
         full_text += extract_text_from_node(node)
     return full_text
 
+# Function to check text against patterns
 def check_patterns(text, issue_key, type, url):
-    if text is not None and text != "":
-        for pattern in REGEX_PATTERNS:
+    if text:
+        for rule_name, pattern in REGEX_PATTERNS:
             if re.search(pattern, text):
-                append_to_csv(FOUND_ISSUES_FILE, [issue_key, type, url])
-                logging.info(f"Found pattern '{pattern}' in issue {issue_key}")
+                # Save rule name along with other details
+                append_to_csv(FOUND_ISSUES_FILE, [issue_key, rule_name, type, url])
+                logging.info(f"Found {rule_name} pattern in issue {issue_key}")
                 
-def process_projects(project_key=None):
-    start_at = 0
-    max_results = 50
-    if project_key:
-        process_issues(project_key)
-        append_to_csv(PROCESSED_PROJECTS_FILE, [project_key])
-    else:
-        more_projects = True
-        while more_projects:
-            projects_response = requests.get(f"{config['base_url']}/rest/api/{config['api_version']}/project?startAt={start_at}&maxResults={max_results}", auth=AUTH, headers=HEADERS)
-            projects = projects_response.json()
-            more_projects = len(projects) == max_results
-            
-            for project in projects:
-                project_key = project['key']
-                with open(PROCESSED_PROJECTS_FILE, mode='r') as file:
-                    processed_projects = [row[0] for row in csv.reader(file)]
-                if project_key in processed_projects:
-                    logging.info(f"Skipping already processed project: {project_key}")
-                    continue
-                
+# Main functions to process projects and issues
+def worker(project_queue):
+    while not project_queue.empty():
+        project_key = project_queue.get()
+        if project_key not in PROCESSED_PROJECTS and not is_project_running(project_key):
+            add_to_running_projects(project_key)
+            try:
                 process_issues(project_key)
                 append_to_csv(PROCESSED_PROJECTS_FILE, [project_key])
-            
-            start_at += max_results
-
+                PROCESSED_PROJECTS.add(project_key)
+            finally:
+                remove_from_running_projects(project_key)
+        project_queue.task_done()
 def check_description_history(issue_key):
 
     url = f"{config['base_url']}/rest/api/{config['api_version']}/issue/{issue_key}/changelog"
@@ -134,7 +164,7 @@ def process_issues(project_key):
             logging.info(f"Processing issue {issue_key} in project {project_key}")
             description = issue['fields'].get('description', '')
             if description:
-                logging.info("Description...")
+                #logging.info("Description...")
                 if env == 'cloud':
                     check_patterns(extract_text(description), issue_key, "description", f"{config['base_url']}/browse/{issue_key}")
                 else:
@@ -143,7 +173,7 @@ def process_issues(project_key):
             comments_response = requests.get(f"{config['base_url']}/rest/api/{config['api_version']}/issue/{issue_key}/comment", auth=AUTH, headers=HEADERS)
             comments = comments_response.json()
             
-            logging.info(f"{comments['total']} comment(s)...")
+            #logging.info(f"{comments['total']} comment(s)...")
             
             for comment in comments.get('comments', []):
                 comment_content = comment.get('body', {})
@@ -151,12 +181,38 @@ def process_issues(project_key):
                     check_patterns(extract_text(comment_content), issue_key, "comment", f"{config['base_url']}/browse/{issue_key}")
                 else:
                     check_patterns(comment_content, issue_key, "comment", f"{config['base_url']}/browse/{issue_key}")
-            logging.info("History...\n")
+            #logging.info("History...\n")
             check_description_history(issue_key)
 
         start_at += max_results
-        
+
+def process_projects(thread_count=50):
+    project_queue = Queue()
+    # Load projects into the queue
+    start_at = 0
+    max_results = 50
+    more_projects = True
+    while more_projects:
+        projects_response = requests.get(f"{config['base_url']}/rest/api/{config['api_version']}/project?startAt={start_at}&maxResults={max_results}", auth=AUTH, headers=HEADERS)
+        if projects_response.status_code == 200:
+            projects = projects_response.json()
+            more_projects = len(projects) == max_results
+            for project in projects:
+                project_key = project['key']
+                project_queue.put(project_key)
+        else:
+            logging.error(f"Failed to load projects: {projects_response.status_code}")
+            break
+        start_at += max_results
+
+    threads = []
+    for _ in range(thread_count):
+        thread = Thread(target=worker, args=(project_queue,))
+        threads.append(thread)
+        thread.start()
+
+    for thread in threads:
+        thread.join()
 if __name__ == '__main__':
-    project_key = "ITSAMPLE"  
-    #process_projects(project_key)
-    process_projects()
+    thread_count = int(sys.argv[1]) if len(sys.argv) > 1 else 5  # Default to 5 threads if not specified
+    process_projects(thread_count)
