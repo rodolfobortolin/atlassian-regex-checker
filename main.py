@@ -240,24 +240,31 @@ def process_issues(project_key):
 
         start_at += max_results
 
-def process_projects(thread_count):
-    start_time = time.time()  
+def process_projects(thread_count, specific_project_key=None):
+    start_time = time.time()
     project_queue = Queue()
-    start_at = 0
-    max_results = 50
-    more_projects = True
-    while more_projects:
-        projects_response = requests.get(f"{CONFIG['base_url']}/rest/api/3/project?startAt={start_at}&maxResults={max_results}", auth=AUTH, headers=HEADERS)
-        if projects_response.status_code == 200:
-            projects = projects_response.json()
-            more_projects = len(projects) == max_results
-            for project in projects:
-                project_key = project['key']
-                project_queue.put(project_key)
-        else:
-            logging.error(f"Failed to load projects: {projects_response.status_code}")
-            break
-        start_at += max_results
+
+    if specific_project_key:
+        # If a specific project key is provided, enqueue only this project
+        project_queue.put(specific_project_key)
+    else:
+        # Default behavior: scan all projects
+        start_at = 0
+        max_results = 50
+        more_projects = True
+        while more_projects:
+            projects_response = requests.get(f"{CONFIG['base_url']}/rest/api/3/project?startAt={start_at}&maxResults={max_results}",
+                                             auth=AUTH, headers=HEADERS)
+            if projects_response.status_code == 200:
+                projects = projects_response.json()
+                more_projects = len(projects) == max_results
+                for project in projects:
+                    project_key = project['key']
+                    project_queue.put(project_key)
+            else:
+                logging.error(f"Failed to load projects: {projects_response.status_code}")
+                break
+            start_at += max_results
 
     threads = []
     for _ in range(thread_count):
@@ -267,12 +274,14 @@ def process_projects(thread_count):
 
     for thread in threads:
         thread.join()
-        
+
     end_time = time.time()  # End timing here
     total_time = end_time - start_time  # Calculate the total time taken
     logging.info(f"Total time taken to process: {total_time:.3f} seconds")  # Log the total time taken
-    
+
 if __name__ == '__main__':
     thread_count = 50
-    process_projects(thread_count)
-
+    # Optional: specify a project key to scan only that project
+    specific_project_key = 'ITSAMPLE'  # Set this to None to scan all projects
+    process_projects(thread_count, specific_project_key)
+    #process_projects(thread_count) # To scan all projects
