@@ -4,6 +4,7 @@ import regex as re
 import logging
 import requests
 import sys
+import time  
 from requests.auth import HTTPBasicAuth
 from threading import Thread
 from queue import Queue
@@ -17,7 +18,7 @@ config = {
 
 env = 'cloud'
 regex_patterns_file = 'regex_patterns.csv'
-log_file = 'application.log'  # Define the log file name
+log_file = 'application.log'
 
 AUTH = HTTPBasicAuth(config['email'], config['token'])
 HEADERS = {"Accept": "application/json"}
@@ -59,6 +60,26 @@ def load_regex_patterns(file_path):
 
 PROCESSED_PROJECTS = load_processed_projects()
 REGEX_PATTERNS = load_regex_patterns(os.path.join(os.getcwd(), regex_patterns_file))
+
+def fetch_and_process_attachments(issue_key):
+    """Fetch attachments from a Jira issue and process them if they are CSV or TXT files."""
+    url = f"{config['base_url']}/rest/api/{config['api_version']}/issue/{issue_key}"
+    response = requests.get(url, auth=AUTH, headers=HEADERS)
+    if response.status_code == 200:
+        issue_details = response.json()
+        attachments = issue_details['fields'].get('attachment', [])
+        for attachment in attachments:
+            if attachment['filename'].endswith(('csv', 'txt', 'json', 'yaml', 'yml', 'md', 'conf', 'ini', 'sh', 'bat', 'ps1', 'log')):
+                download_url = attachment['content']
+                file_response = requests.get(download_url, auth=AUTH, headers=HEADERS)
+                if file_response.status_code == 200:
+                    file_content = file_response.text
+                    check_patterns(file_content, issue_key, 'attachment', attachment['self'])
+                    logging.info(f"Processed attachment {attachment['filename']} for issue {issue_key}")
+                else:
+                    logging.error(f"Failed to download attachment {attachment['filename']} from issue {issue_key}")
+    else:
+        logging.error(f"Failed to retrieve issue details for {issue_key}: {response.text}")
 
 def add_to_running_projects(project_key):
     """Add a project key to the running projects file."""
@@ -181,6 +202,8 @@ def process_issues(project_key):
             
             #logging.info(f"{comments['total']} comment(s)...")
             
+            fetch_and_process_attachments(issue_key)
+            
             for comment in comments.get('comments', []):
                 comment_content = comment.get('body', {})
                 if env == 'cloud':
@@ -192,7 +215,8 @@ def process_issues(project_key):
 
         start_at += max_results
 
-def process_projects(thread_count=50):
+def process_projects(thread_count):
+    start_time = time.time()  # Start timing here
     project_queue = Queue()
     # Load projects into the queue
     start_at = 0
@@ -219,7 +243,13 @@ def process_projects(thread_count=50):
 
     for thread in threads:
         thread.join()
+        
+    end_time = time.time()  # End timing here
+    total_time = end_time - start_time  # Calculate the total time taken
+    logging.info(f"Total time taken to process: {total_time:.3f} seconds")  # Log the total time taken
+
+    
 if __name__ == '__main__':
-    thread_count = int(sys.argv[1]) if len(sys.argv) > 1 else 5  # Default to 5 threads if not specified
+    thread_count = 50
     process_projects(thread_count)
 
