@@ -8,6 +8,9 @@ from requests.auth import HTTPBasicAuth
 from threading import Thread
 from queue import Queue
 
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
+
 ########################
 # Configurations
 ########################
@@ -27,6 +30,7 @@ PROCESSED_PROJECTS_FILE = 'processed_projects.csv'
 AUTH = HTTPBasicAuth(CONFIG['email'], CONFIG['token'])
 HEADERS = {"Accept": "application/json"}
 
+
 ########################
 # Logging Setup
 ########################
@@ -41,6 +45,44 @@ logger.addHandler(file_handler)
 ########################
 # Utility Functions
 ########################
+
+def load_project_keys(file_path='projects.txt'):
+    """Load project keys from a specified file."""
+    try:
+        if os.path.exists(file_path):
+            with open(file_path, 'r') as file:
+                return [line.strip() for line in file if line.strip()]
+        else:
+            return None
+    except Exception as e:
+        logging.error(f"Failed to read project keys from {file_path}: {e}")
+        return None
+
+def download_attachment(download_url):
+    """Download attachment with retry and error handling."""
+    session = setup_retry_session()
+    try:
+        response = session.get(download_url, auth=AUTH, headers=HEADERS, timeout=60)  # Timeout can be adjusted
+        response.raise_for_status()
+        return response.text
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Failed to download attachment from {download_url}: {e}")
+        return None
+
+def setup_retry_session(retries=3, backoff_factor=0.3, status_forcelist=(500, 502, 503, 504)):
+    """Set up a requests session with retry mechanism."""
+    session = requests.Session()
+    retry = Retry(
+        total=retries,
+        read=retries,
+        connect=retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=status_forcelist,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    return session
 
 def extract_text_from_node(node):
     text = ''
@@ -81,9 +123,21 @@ if not os.path.exists(PROCESSED_PROJECTS_FILE):
         writer = csv.writer(file)
         writer.writerow(['Project Key'])
    
+
 ########################
 # Data Loading Functions
 ########################
+
+def load_project_keys(file_path='projects.txt'):
+    try:
+        with open(file_path, 'r') as file:
+            return [line.strip() for line in file if line.strip()]
+    except FileNotFoundError:
+        logging.error(f"File not found: {file_path}")
+        return []
+    except Exception as e:
+        logging.error(f"Failed to read project keys from {file_path}: {e}")
+        return []
 
 def load_processed_projects():
     """Load processed projects from file."""
@@ -114,6 +168,7 @@ def load_regex_patterns(file_path):
         logging.error(f"Error loading regex patterns from '{file_path}': {e}")
     return patterns
 
+
 PROCESSED_PROJECTS = load_processed_projects()
 REGEX_PATTERNS = load_regex_patterns(os.path.join(os.getcwd(), REGEX_PATTERNS_FILE))
 
@@ -121,27 +176,41 @@ REGEX_PATTERNS = load_regex_patterns(os.path.join(os.getcwd(), REGEX_PATTERNS_FI
 # API Interaction Functions
 ############################
 
-def process_attachments(issue_key):
-    """Fetch and process attachments from a Jira issue."""
-    url = f"{CONFIG['base_url']}/rest/api/3/issue/{issue_key}"
+def fetch_all_projects():
+    """Fetch all projects from JIRA using REST API."""
+    url = f"{CONFIG['base_url']}/rest/api/3/project"
     try:
         response = requests.get(url, auth=AUTH, headers=HEADERS)
         response.raise_for_status()
+        projects = response.json()
+        return [project['key'] for project in projects]
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Failed to fetch projects from JIRA: {e}")
+        return []
+
+def process_attachments(issue_key):
+    """Fetch and process attachments from a Jira issue."""
+    url = f"{CONFIG['base_url']}/rest/api/3/issue/{issue_key}"
+    # Modify headers to disable automatic gzip compression
+    custom_headers = {**HEADERS, 'Accept-Encoding': 'identity'}
+
+    try:
+        response = requests.get(url, auth=AUTH, headers=custom_headers)
+        response.raise_for_status()  # Ensure the request was successful
         issue_details = response.json()
         attachments = issue_details['fields'].get('attachment', [])
+
         for attachment in attachments:
             if attachment['filename'].endswith(('csv', 'txt', 'json', 'yaml', 'yml', 'md', 'conf', 'ini', 'sh', 'bat', 'ps1', 'log')):
                 download_url = attachment['content']
-                try:
-                    file_response = requests.get(download_url, auth=AUTH, headers=HEADERS)
-                    file_response.raise_for_status()
-                    file_content = file_response.text
+                file_content = download_attachment(download_url)
+                if file_content:
                     check_patterns(file_content, issue_key, 'attachment', f"{CONFIG['base_url']}/browse/{issue_key}")
-                except requests.exceptions.RequestException as e:
-                    logging.error(f"Failed to download attachment {attachment['filename']} from issue {issue_key}: {e}")
     except requests.exceptions.RequestException as e:
         logging.error(f"Failed to retrieve issue details for {issue_key}: {e}")
- 
+        logging.error(f"Response status code: {response.status_code}")
+        logging.error(f"Response content: {response.content[:500]}")  # Log part of the content to inspect it
+        
 def process_comments(issue_key):
     """Fetch and process all comments for a given issue."""
     comments_response = requests.get(f"{CONFIG['base_url']}/rest/api/3/issue/{issue_key}/comment", auth=AUTH, headers=HEADERS)
@@ -208,6 +277,10 @@ def is_project_running(project_key):
 def worker(project_queue):
     while not project_queue.empty():
         project_key = project_queue.get()
+        logging.info(f"Processing project_key: {project_key}")  
+        if isinstance(project_key, list):
+            logging.error(f"Received a list instead of a single project key: {project_key}")
+            continue  # Skip processing if it's a list
         if project_key not in PROCESSED_PROJECTS and not is_project_running(project_key):
             add_to_running_projects(project_key)
             try:
@@ -217,7 +290,6 @@ def worker(project_queue):
             finally:
                 remove_from_running_projects(project_key)
         project_queue.task_done()
-
 def process_issues(project_key):
     """Process all issues within a project by extracting necessary information and handling them."""
     start_at = 0
@@ -228,43 +300,33 @@ def process_issues(project_key):
         issues = issues_response.json()
         issues_found = 'issues' in issues and len(issues['issues']) > 0
         
-        for issue in issues['issues']:
-            issue_key = issue['key']
-            logging.info(f"Processing issue {issue_key} in project {project_key}")
+        if 'issues' in issues and issues['issues']:
             
-            description = issue['fields'].get('description', '')
-            process_descriptions(issue_key, description)
-            process_comments(issue_key)
-            process_attachments(issue_key)
-            process_history(issue_key)
+            for issue in issues['issues']:
+                issue_key = issue['key']
+                logging.info(f"Processing issue {issue_key} in project {project_key}")
+                
+                description = issue['fields'].get('description', '')
+                process_descriptions(issue_key, description)
+                process_comments(issue_key)
+                process_attachments(issue_key)
+                process_history(issue_key)
 
-        start_at += max_results
+            start_at += max_results
 
-def process_projects(thread_count, specific_project_key=None):
+
+def process_projects(thread_count, project_keys=None):
+    """Process a list of projects in parallel using threading."""
     start_time = time.time()
     project_queue = Queue()
 
-    if specific_project_key:
-        # If a specific project key is provided, enqueue only this project
-        project_queue.put(specific_project_key)
-    else:
-        # Default behavior: scan all projects
-        start_at = 0
-        max_results = 50
-        more_projects = True
-        while more_projects:
-            projects_response = requests.get(f"{CONFIG['base_url']}/rest/api/3/project?startAt={start_at}&maxResults={max_results}",
-                                             auth=AUTH, headers=HEADERS)
-            if projects_response.status_code == 200:
-                projects = projects_response.json()
-                more_projects = len(projects) == max_results
-                for project in projects:
-                    project_key = project['key']
-                    project_queue.put(project_key)
-            else:
-                logging.error(f"Failed to load projects: {projects_response.status_code}")
-                break
-            start_at += max_results
+    # Determine which projects to process
+    if project_keys is None or project_keys == []:
+        project_keys = fetch_all_projects()
+
+    # Enqueue specified or all project keys
+    for project_key in project_keys:
+        project_queue.put(project_key)
 
     threads = []
     for _ in range(thread_count):
@@ -275,13 +337,11 @@ def process_projects(thread_count, specific_project_key=None):
     for thread in threads:
         thread.join()
 
-    end_time = time.time()  # End timing here
-    total_time = end_time - start_time  # Calculate the total time taken
-    logging.info(f"Total time taken to process: {total_time:.3f} seconds")  # Log the total time taken
+    end_time = time.time()
+    logging.info(f"Total time taken to process: {end_time - start_time:.3f} seconds")
 
+# Example usage
 if __name__ == '__main__':
-    thread_count = 50
-    # Optional: specify a project key to scan only that project
-    specific_project_key = 'ITSAMPLE'  # Set this to None to scan all projects
-    process_projects(thread_count, specific_project_key)
-    #process_projects(thread_count) # To scan all projects
+    project_keys = load_project_keys()  
+    thread_count = 10  # Adjust thread count as needed
+    process_projects(thread_count, project_keys)
