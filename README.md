@@ -7,7 +7,7 @@ The script maintains a record of processed projects in a file named `processed_p
 
 ### Install regex Python module
 ```bash
-pip install regex
+pip install regex, urllib3
 ```
 
 ### Configuration
