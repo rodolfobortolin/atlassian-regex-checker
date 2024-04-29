@@ -22,7 +22,6 @@ CONFIG = {
     'token' : "",  
     'base_url' : "https://<domain>.atlassian.net",
 }
-
 REGEX_PATTERNS_FILE = 'regex_patterns.csv'
 FALSE_POSITIVES = 'false_positive.txt'
 FOUND_ISSUES_FILE = 'found_issues.csv'
@@ -338,7 +337,7 @@ def process_issues(project_key):
 
     # Initial fetch to determine the total number of issues to process
     try:
-        initial_url = f"{CONFIG['base_url']}/rest/api/3/search?jql=project=\'{project_key}\'&startAt=0&maxResults=1"  # Fetch only one issue to get the total count
+        initial_url = f"{CONFIG['base_url']}/rest/api/3/search?jql=project=\'{project_key}\'&startAt=0&maxResults=1"
         initial_response = requests.get(initial_url, auth=AUTH, headers=HEADERS)
         initial_response.raise_for_status()
         total_issues_count = initial_response.json().get('total', 0)
@@ -348,8 +347,8 @@ def process_issues(project_key):
         return  # Exit the function if initial fetch fails
 
     # Process all issues
-    try:
-        while True:
+    while True:
+        try:
             issues_url = f"{CONFIG['base_url']}/rest/api/3/search?jql=project=\'{project_key}\'&startAt={start_at}&maxResults={max_results}"
             issues_response = requests.get(issues_url, auth=AUTH, headers=HEADERS)
             issues_response.raise_for_status()
@@ -361,21 +360,37 @@ def process_issues(project_key):
             for issue in issues_list:
                 issue_key = issue['key']
                 logging.info(f"Processing issue {issue_key} in project {project_key}")
-                description = issue['fields'].get('description', {})
-                process_descriptions(issue_key, description)
-                process_comments(issue_key)
-                process_attachments(issue_key)
-                process_history(issue_key)
+                
+                try:
+                    description = issue['fields'].get('description', {})
+                    process_descriptions(issue_key, description)
+                except Exception as e:
+                    logging.error(f"Failed to process description for issue {issue_key}: {e}")
+
+                try:
+                    process_comments(issue_key)
+                except Exception as e:
+                    logging.error(f"Failed to process comments for issue {issue_key}: {e}")
+
+                try:
+                    process_attachments(issue_key)
+                except Exception as e:
+                    logging.error(f"Failed to process attachments for issue {issue_key}: {e}")
+
+                try:
+                    process_history(issue_key)
+                except Exception as e:
+                    logging.error(f"Failed to process history for issue {issue_key}: {e}")
 
             start_at += len(issues_list)  # Prepare for the next batch of issues
 
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Error fetching or processing issues for project {project_key}: {e}")
-    except Exception as e:
-        logging.error(f"An unexpected error occurred while processing issues for project {project_key}: {e}")
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Error fetching or processing issues for project {project_key}: {e}")
+            # Consider whether to break or continue here depending on how critical the failure is
 
     logging.info(f"Finished processing all issues for project {project_key}")
-
+    
+    
 def process_projects(thread_count, project_keys=None):
     """Process a list of projects in parallel using threading."""
     start_time = time.time()
