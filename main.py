@@ -4,11 +4,13 @@ import regex as re
 import logging
 import requests
 import time  
+from http.client import IncompleteRead
 from requests.auth import HTTPBasicAuth
 from threading import Thread
 from queue import Queue
-
+from requests.exceptions import ChunkedEncodingError
 from requests.adapters import HTTPAdapter
+from urllib3.exceptions import ProtocolError
 from requests.packages.urllib3.util.retry import Retry
 
 ########################
@@ -22,6 +24,7 @@ CONFIG = {
 }
 
 REGEX_PATTERNS_FILE = 'regex_patterns.csv'
+FALSE_POSITIVES = 'false_positive.txt'
 FOUND_ISSUES_FILE = 'found_issues.csv'
 RUNNING_PROJECTS_FILE = 'running_projects.txt'
 LOG_FILE = 'application.log'
@@ -59,18 +62,25 @@ def load_project_keys(file_path='projects.txt'):
         return None
 
 def download_attachment(download_url):
-    """Download attachment with retry and error handling."""
     session = setup_retry_session()
-    try:
-        response = session.get(download_url, auth=AUTH, headers=HEADERS, timeout=60)  # Timeout can be adjusted
-        response.raise_for_status()
-        return response.text
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Failed to download attachment from {download_url}: {e}")
-        return None
+    attempt = 0
+    max_attempts = 5
+    while attempt < max_attempts:
+        try:
+            response = session.get(download_url, auth=AUTH, headers=HEADERS, timeout=120)
+            response.raise_for_status()  # Raises a HTTPError for bad responses
+            return response.content  # Use .content to fetch binary data if needed, or .text for text
+        except (requests.exceptions.RequestException, ProtocolError, IncompleteRead, ChunkedEncodingError) as e:
+            logging.warning(f"Attempt {attempt + 1} failed with error: {e}")
+            attempt += 1
+            time.sleep(2)  # Wait 2 seconds before retrying
+        except Exception as e:
+            logging.error(f"Failed to download attachment from {download_url} after {max_attempts} attempts: {e}")
+            return None
+    return None
 
-def setup_retry_session(retries=3, backoff_factor=0.3, status_forcelist=(500, 502, 503, 504)):
-    """Set up a requests session with retry mechanism."""
+def setup_retry_session(retries=3, backoff_factor=0.3, status_forcelist=(500, 502, 503, 504), allowed_exceptions=(ProtocolError, IncompleteRead)):
+    """Set up a requests session with retry mechanism including ProtocolError."""
     session = requests.Session()
     retry = Retry(
         total=retries,
@@ -78,6 +88,13 @@ def setup_retry_session(retries=3, backoff_factor=0.3, status_forcelist=(500, 50
         connect=retries,
         backoff_factor=backoff_factor,
         status_forcelist=status_forcelist,
+        allowed_methods=frozenset(['HEAD', 'GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'TRACE']),  # Specify allowed HTTP methods for retries
+        raise_on_status=False,
+        raise_on_redirect=True,
+        history=None,
+        respect_retry_after_header=True,
+        remove_headers_on_redirect=[],
+        other=allowed_exceptions
     )
     adapter = HTTPAdapter(max_retries=retry)
     session.mount('http://', adapter)
@@ -103,15 +120,21 @@ def append_to_csv(file_name, row):
         logging.error(f"Failed to write to file '{file_name}': {e}")
 
 def check_patterns(text, issue_key, type, url):
+    false_positives = load_false_positives()  # Load false positives at the start or periodically refresh if needed
+    if issue_key in false_positives:
+        logging.info(f"Issue {issue_key} is marked as a false positive and will not be processed.")
+        return
+    
+    if isinstance(text, bytes):
+        text = text.decode('utf-8')  # Ensure text is in string format
     if text:
         for rule_name, pattern in REGEX_PATTERNS:
             if re.search(pattern, text):
                 separator = "*" * 50  # Creates a line of asterisks
                 append_to_csv(FOUND_ISSUES_FILE, [issue_key, rule_name, type, url])
                 logging.warning(separator)
-                logging.warning(f"!!! ALERT: Found {rule_name} pattern in issue {issue_key}  !!!")
+                logging.warning(f"!!! ALERT: Found {rule_name} pattern in issue {issue_key} !!!")
                 logging.warning(separator)
-
 def extract_text(content):
     full_text = ''
     for node in content['content']:
@@ -127,6 +150,20 @@ if not os.path.exists(PROCESSED_PROJECTS_FILE):
 ########################
 # Data Loading Functions
 ########################
+
+def load_false_positives(file_path='false_positive.txt'):
+    false_positives = set()
+    # Ensure the file exists, create it if it doesn't
+    if not os.path.exists(file_path):
+        with open(file_path, 'w') as file:
+            logging.info(f"{file_path} not found. Creating new file.")
+    try:
+        with open(file_path, 'r') as file:
+            for line in file:
+                false_positives.add(line.strip())
+    except Exception as e:
+        logging.error(f"Failed to read false positives from {file_path}: {e}")
+    return false_positives
 
 def load_project_keys(file_path='projects.txt'):
     try:
@@ -192,7 +229,8 @@ def process_attachments(issue_key):
     """Fetch and process attachments from a Jira issue."""
     url = f"{CONFIG['base_url']}/rest/api/3/issue/{issue_key}"
     # Modify headers to disable automatic gzip compression
-    custom_headers = {**HEADERS, 'Accept-Encoding': 'identity'}
+    custom_headers = {**HEADERS, 'Accept-Encoding': 'identity', 'Accept-Encoding': 'gzip, deflate', 'Connection': 'keep-alive'}
+    response = None  # Initialize response outside try to make it accessible in except
 
     try:
         response = requests.get(url, auth=AUTH, headers=custom_headers)
@@ -208,9 +246,12 @@ def process_attachments(issue_key):
                     check_patterns(file_content, issue_key, 'attachment', f"{CONFIG['base_url']}/browse/{issue_key}")
     except requests.exceptions.RequestException as e:
         logging.error(f"Failed to retrieve issue details for {issue_key}: {e}")
-        logging.error(f"Response status code: {response.status_code}")
-        logging.error(f"Response content: {response.content[:500]}")  # Log part of the content to inspect it
-        
+        if response:
+            logging.error(f"Response status code: {response.status_code}")
+            logging.error(f"Response content: {response.content[:500]}")  # Log part of the content to inspect it
+        else:
+            logging.error("No response received due to network or connection error.")
+
 def process_comments(issue_key):
     """Fetch and process all comments for a given issue."""
     comments_response = requests.get(f"{CONFIG['base_url']}/rest/api/3/issue/{issue_key}/comment", auth=AUTH, headers=HEADERS)
@@ -276,44 +317,64 @@ def is_project_running(project_key):
 
 def worker(project_queue):
     while not project_queue.empty():
-        project_key = project_queue.get()
-        logging.info(f"Processing project_key: {project_key}")  
-        if isinstance(project_key, list):
-            logging.error(f"Received a list instead of a single project key: {project_key}")
-            continue  # Skip processing if it's a list
-        if project_key not in PROCESSED_PROJECTS and not is_project_running(project_key):
-            add_to_running_projects(project_key)
-            try:
+        try:
+            project_key = project_queue.get()
+            logging.info(f"Processing project_key: {project_key}")
+            if project_key not in PROCESSED_PROJECTS and not is_project_running(project_key):
+                add_to_running_projects(project_key)
                 process_issues(project_key)
                 append_to_csv(PROCESSED_PROJECTS_FILE, [project_key])
                 PROCESSED_PROJECTS.add(project_key)
-            finally:
                 remove_from_running_projects(project_key)
-        project_queue.task_done()
+        except Exception as e:
+            logging.error(f"Error processing project {project_key}: {e}")
+        finally:
+            project_queue.task_done()
+            
 def process_issues(project_key):
-    """Process all issues within a project by extracting necessary information and handling them."""
     start_at = 0
     max_results = 50
-    issues_found = True
-    while issues_found:
-        issues_response = requests.get(f"{CONFIG['base_url']}/rest/api/3/search?jql=project=\'{project_key}\'&startAt={start_at}&maxResults={max_results}", auth=AUTH, headers=HEADERS)
-        issues = issues_response.json()
-        issues_found = 'issues' in issues and len(issues['issues']) > 0
-        
-        if 'issues' in issues and issues['issues']:
-            
-            for issue in issues['issues']:
+    total_issues_count = 0  # This will store the total count of issues for logging
+
+    # Initial fetch to determine the total number of issues to process
+    try:
+        initial_url = f"{CONFIG['base_url']}/rest/api/3/search?jql=project=\'{project_key}\'&startAt=0&maxResults=1"  # Fetch only one issue to get the total count
+        initial_response = requests.get(initial_url, auth=AUTH, headers=HEADERS)
+        initial_response.raise_for_status()
+        total_issues_count = initial_response.json().get('total', 0)
+        logging.info(f"Total issues to be processed for project {project_key}: {total_issues_count}")
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Failed to fetch initial issue data for project {project_key}: {e}")
+        return  # Exit the function if initial fetch fails
+
+    # Process all issues
+    try:
+        while True:
+            issues_url = f"{CONFIG['base_url']}/rest/api/3/search?jql=project=\'{project_key}\'&startAt={start_at}&maxResults={max_results}"
+            issues_response = requests.get(issues_url, auth=AUTH, headers=HEADERS)
+            issues_response.raise_for_status()
+            issues_data = issues_response.json()
+            issues_list = issues_data.get('issues', [])
+            if not issues_list:
+                break  # Exit the loop if no more issues are found
+
+            for issue in issues_list:
                 issue_key = issue['key']
                 logging.info(f"Processing issue {issue_key} in project {project_key}")
-                
-                description = issue['fields'].get('description', '')
+                description = issue['fields'].get('description', {})
                 process_descriptions(issue_key, description)
                 process_comments(issue_key)
                 process_attachments(issue_key)
                 process_history(issue_key)
 
-            start_at += max_results
+            start_at += len(issues_list)  # Prepare for the next batch of issues
 
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Error fetching or processing issues for project {project_key}: {e}")
+    except Exception as e:
+        logging.error(f"An unexpected error occurred while processing issues for project {project_key}: {e}")
+
+    logging.info(f"Finished processing all issues for project {project_key}")
 
 def process_projects(thread_count, project_keys=None):
     """Process a list of projects in parallel using threading."""
