@@ -5,7 +5,7 @@ import logging
 import requests
 import time  
 from datetime import datetime, timedelta
-import pytz  
+import pytz  # Make sure to install pytz if not already installed: pip install pytz
 from http.client import IncompleteRead
 from requests.auth import HTTPBasicAuth
 from threading import Thread
@@ -73,15 +73,22 @@ def download_attachment(download_url):
         try:
             response = session.get(download_url, auth=AUTH, headers=HEADERS, timeout=120)
             response.raise_for_status()  # Raises a HTTPError for bad responses
-            return response.content  # Use .content to fetch binary data if needed, or .text for text
+            content_type = response.headers.get('Content-Type')
+        
+            # If the content type is text, decode it, otherwise return the bytes
+            if 'text' in content_type:
+                return response.text  # Decodes using response encoding
+            else:
+                return response.content  # Return bytes for binary content
+
         except (requests.exceptions.RequestException, ProtocolError, IncompleteRead, ChunkedEncodingError) as e:
             logging.warning(f"Attempt {attempt + 1} failed with error: {e}")
             attempt += 1
             time.sleep(2)  # Wait 2 seconds before retrying
         except Exception as e:
             logging.error(f"Failed to download attachment from {download_url} after {max_attempts} attempts: {e}")
-            return None
-    return None
+            return None, None
+    return None, None
 
 def setup_retry_session(retries=3, backoff_factor=0.3, status_forcelist=(500, 502, 503, 504), allowed_exceptions=(ProtocolError, IncompleteRead)):
     """Set up a requests session with retry mechanism including ProtocolError."""
@@ -139,6 +146,8 @@ def check_patterns(text, issue_key, type, url):
                 logging.warning(separator)
                 logging.warning(f"!!! ALERT: Found {rule_name} pattern in issue {issue_key} !!!")
                 logging.warning(separator)
+                
+                
 def extract_text(content):
     full_text = ''
     for node in content['content']:
@@ -287,6 +296,8 @@ def process_attachments(issue_key, last_run_date):
                 if attachment['filename'].endswith(('csv', 'txt', 'json', 'yaml', 'yml', 'md', 'conf', 'ini', 'sh', 'bat', 'ps1', 'log')):
                     download_url = attachment['content']
                     file_content = download_attachment(download_url)
+                    if file_content and isinstance(file_content, bytes):
+                        file_content = file_content.decode('utf-8')  # Decode bytes to string
                     if file_content:
                         check_patterns(file_content, issue_key, 'attachment', f"{CONFIG['base_url']}/browse/{issue_key}")
     except requests.exceptions.RequestException as e:
@@ -382,6 +393,11 @@ def process_issues(project_key, last_run_date):
     start_at = 0
     max_results = 50
     jql_query = f"project=\'{project_key}\' AND (created >= \'{last_run_date.strftime('%Y-%m-%d %H:%M')}\' OR updated >= \'{last_run_date.strftime('%Y-%m-%d %H:%M')}\')"
+    issue_counter = 0
+    # First, get the total count of issues to be processed
+    count_url = f"{CONFIG['base_url']}/rest/api/3/search?jql={jql_query}&maxResults=0"
+    count_response = requests.get(count_url, auth=AUTH, headers=HEADERS)
+    total_issues = count_response.json().get('total', 0)
     
     while True:
         try:
@@ -394,8 +410,9 @@ def process_issues(project_key, last_run_date):
                 break  # Exit the loop if no more issues are found
 
             for issue in issues_list:
+                issue_counter += 1
                 issue_key = issue['key']
-                logging.info(f"Processing issue {issue_key} in project {project_key}")
+                logging.info(f"Processing issue {issue_key} ({issue_counter} of {total_issues})")
 
                 try:
                     description = issue['fields'].get('description', {})
@@ -428,7 +445,7 @@ def process_issues(project_key, last_run_date):
 
 def process_projects(thread_count, project_keys=None, last_run_date=None):
     """Process a list of projects in parallel using threading."""
-    start_time = time.time()
+    
     project_queue = Queue()
 
     # Determine which projects to process
@@ -448,12 +465,11 @@ def process_projects(thread_count, project_keys=None, last_run_date=None):
     for thread in threads:
         thread.join()
 
-    end_time = time.time()
-    logging.info(f"Total time taken to process: {end_time - start_time:.3f} seconds")
-
 # Example usage
 if __name__ == '__main__':
 
+    start_time = time.time()
+    
     delete_file(LOG_FILE)
     delete_file(PROCESSED_PROJECTS_FILE)
     delete_file(RUNNING_PROJECTS_FILE)
@@ -465,9 +481,12 @@ if __name__ == '__main__':
         logging.info("No last run date found.")
 
     project_keys = load_project_keys()  
-    thread_count = 1  # Adjust thread count as needed
+    thread_count = 5  # Adjust thread count as needed
     process_projects(thread_count, project_keys, last_run_date)
 
     update_last_run_date()
     delete_file(PROCESSED_PROJECTS_FILE)
     delete_file(RUNNING_PROJECTS_FILE)
+    
+    end_time = time.time()
+    logging.info(f"Total time taken to process: {end_time - start_time:.3f} seconds")
