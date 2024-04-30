@@ -53,6 +53,28 @@ logger.addHandler(file_handler)
 # Utility Functions
 ########################
 
+def format_time(duration):
+    hours, remainder = divmod(duration, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours > 0:
+        return f"{int(hours)} hours, {int(minutes)} minutes, and {seconds:.3f} seconds"
+    elif minutes > 0:
+        return f"{int(minutes)} minutes and {seconds:.3f} seconds"
+    else:
+        return f"{seconds:.3f} seconds"
+
+def load_project_keys(file_path='projects.txt'):
+    """Load project keys from a specified file."""
+    try:
+        if os.path.exists(file_path):
+            with open(file_path, 'r') as file:
+                return [line.strip() for line in file if line.strip()]
+        else:
+            return None
+    except Exception as e:
+        logging.error(f"Failed to read project keys from {file_path}: {e}")
+        return None
+
 def load_project_keys(file_path='projects.txt'):
     """Load project keys from a specified file."""
     try:
@@ -489,4 +511,4 @@ if __name__ == '__main__':
     delete_file(RUNNING_PROJECTS_FILE)
     
     end_time = time.time()
-    logging.info(f"Total time taken to process: {end_time - start_time:.3f} seconds")
+    logging.info(f"Total time taken to process: {format_time(end_time - start_time)}")
