@@ -4,6 +4,8 @@ import regex as re
 import logging
 import requests
 import time  
+from datetime import datetime, timedelta
+import pytz  
 from http.client import IncompleteRead
 from requests.auth import HTTPBasicAuth
 from threading import Thread
@@ -22,12 +24,15 @@ CONFIG = {
     'token' : "",  
     'base_url' : "https://<domain>.atlassian.net",
 }
+
 REGEX_PATTERNS_FILE = 'regex_patterns.csv'
 FALSE_POSITIVES = 'false_positive.txt'
 FOUND_ISSUES_FILE = 'found_issues.csv'
 RUNNING_PROJECTS_FILE = 'running_projects.txt'
 LOG_FILE = 'application.log'
 PROCESSED_PROJECTS_FILE = 'processed_projects.csv'
+LAST_RUN_FILE = 'last_run.txt'
+
 
 AUTH = HTTPBasicAuth(CONFIG['email'], CONFIG['token'])
 HEADERS = {"Accept": "application/json"}
@@ -150,6 +155,47 @@ if not os.path.exists(PROCESSED_PROJECTS_FILE):
 # Data Loading Functions
 ########################
 
+def delete_file(file_path):
+    """Delete a file if it exists."""
+    try:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            logging.info(f"Deleted file: {file_path}")
+    except Exception as e:
+        logging.error(f"Failed to delete file {file_path}: {e}")
+
+def read_last_run_date():
+    """Read the date and time of the last run from the file, or set a default if not available."""
+    try:
+        with open(LAST_RUN_FILE, 'r') as file:
+            last_run_date = file.read().strip()
+            if last_run_date:
+                # Parse the datetime and make it timezone aware (UTC)
+                return datetime.strptime(last_run_date, '%Y-%m-%d %H:%M').replace(tzinfo=pytz.UTC)
+            else:
+                # Set the last run date to 10 years ago and make it timezone aware (UTC)
+                return datetime.now(pytz.UTC) - timedelta(days=365 * 10)
+    except FileNotFoundError:
+        # If the file does not exist, set the last run date to 10 years ago and make it timezone aware (UTC)
+        return datetime.now(pytz.UTC) - timedelta(days=365 * 10)
+    except Exception as e:
+        logging.error(f"Failed to read last run date: {e}")
+        # Default to 10 years ago and make it timezone aware (UTC)
+        return datetime.now(pytz.UTC) - timedelta(days=365 * 10)
+
+def update_last_run_date():
+    """Update the last run date and time to the current date."""
+    try:
+        with open(LAST_RUN_FILE, 'w') as file:
+            # Write the current UTC datetime
+            file.write(datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M'))
+    except Exception as e:
+        logging.error(f"Failed to update last run date: {e}")
+
+# You will need to ensure that datetime comparisons elsewhere in your script also use this approach.
+# Here's an example modification for a function that processes history:
+
+
 def load_false_positives(file_path='false_positive.txt'):
     false_positives = set()
     # Ensure the file exists, create it if it doesn't
@@ -224,40 +270,41 @@ def fetch_all_projects():
         logging.error(f"Failed to fetch projects from JIRA: {e}")
         return []
 
-def process_attachments(issue_key):
-    """Fetch and process attachments from a Jira issue."""
+def process_attachments(issue_key, last_run_date):
+    """Fetch and process attachments from a Jira issue only if they were added or modified after last_run_date."""
     url = f"{CONFIG['base_url']}/rest/api/3/issue/{issue_key}"
-    # Modify headers to disable automatic gzip compression
     custom_headers = {**HEADERS, 'Accept-Encoding': 'identity', 'Accept-Encoding': 'gzip, deflate', 'Connection': 'keep-alive'}
-    response = None  # Initialize response outside try to make it accessible in except
-
+    
     try:
         response = requests.get(url, auth=AUTH, headers=custom_headers)
-        response.raise_for_status()  # Ensure the request was successful
+        response.raise_for_status()
         issue_details = response.json()
         attachments = issue_details['fields'].get('attachment', [])
 
         for attachment in attachments:
-            if attachment['filename'].endswith(('csv', 'txt', 'json', 'yaml', 'yml', 'md', 'conf', 'ini', 'sh', 'bat', 'ps1', 'log')):
-                download_url = attachment['content']
-                file_content = download_attachment(download_url)
-                if file_content:
-                    check_patterns(file_content, issue_key, 'attachment', f"{CONFIG['base_url']}/browse/{issue_key}")
+            attachment_date = datetime.strptime(attachment['created'], '%Y-%m-%dT%H:%M:%S.%f%z')
+            if attachment_date > last_run_date:
+                if attachment['filename'].endswith(('csv', 'txt', 'json', 'yaml', 'yml', 'md', 'conf', 'ini', 'sh', 'bat', 'ps1', 'log')):
+                    download_url = attachment['content']
+                    file_content = download_attachment(download_url)
+                    if file_content:
+                        check_patterns(file_content, issue_key, 'attachment', f"{CONFIG['base_url']}/browse/{issue_key}")
     except requests.exceptions.RequestException as e:
         logging.error(f"Failed to retrieve issue details for {issue_key}: {e}")
-        if response:
-            logging.error(f"Response status code: {response.status_code}")
-            logging.error(f"Response content: {response.content[:500]}")  # Log part of the content to inspect it
-        else:
-            logging.error("No response received due to network or connection error.")
-
-def process_comments(issue_key):
-    """Fetch and process all comments for a given issue."""
+        
+def process_comments(issue_key, last_run_date):
+    """Fetch and process all comments for a given issue only if they were added or modified after last_run_date."""
     comments_response = requests.get(f"{CONFIG['base_url']}/rest/api/3/issue/{issue_key}/comment", auth=AUTH, headers=HEADERS)
-    comments = comments_response.json()
-    for comment in comments.get('comments', []):
-        comment_content = comment.get('body', {})
-        check_patterns(extract_text(comment_content), issue_key, "comment", f"{CONFIG['base_url']}/browse/{issue_key}")
+    if comments_response.status_code == 200:
+        comments = comments_response.json()
+        for comment in comments.get('comments', []):
+            comment_date = datetime.strptime(comment['updated'], '%Y-%m-%dT%H:%M:%S.%f%z')
+            if comment_date > last_run_date:
+                comment_content = comment.get('body', {})
+                check_patterns(extract_text(comment_content), issue_key, "comment", f"{CONFIG['base_url']}/browse/{issue_key}")
+    else:
+        logging.error(f"Failed to retrieve comments for {issue_key}: {comments_response.status_code}")
+        logging.error(comments_response.text)
 
 def process_descriptions(issue_key, description):
     """Extract and check patterns in the description based on environment."""
@@ -265,22 +312,23 @@ def process_descriptions(issue_key, description):
         check_patterns(extract_text(description), issue_key, "description", f"{CONFIG['base_url']}/browse/{issue_key}")
 
 
-def process_history(issue_key):
-    """Process changelog history for descriptions of a given issue."""
+def process_history(issue_key, last_run_date):
+    """Process changelog history for descriptions of a given issue only if changes were made after last_run_date."""
     url = f"{CONFIG['base_url']}/rest/api/3/issue/{issue_key}/changelog"
-
     response = requests.get(url, auth=AUTH, headers=HEADERS)
     if response.status_code == 200:
         changes = response.json()
         for history_item in changes['values']:
-            for item in history_item['items']:
-                if item['field'] == 'description':
-                    old_description = item.get('fromString', '')
-                    check_patterns(old_description, issue_key, "description history", f"{CONFIG['base_url']}/browse/{issue_key}")
+            history_date = datetime.strptime(history_item['created'], '%Y-%m-%dT%H:%M:%S.%f%z')
+            if history_date > last_run_date:
+                for item in history_item['items']:
+                    if item['field'] == 'description':
+                        old_description = item.get('fromString', '')
+                        check_patterns(old_description, issue_key, "description history", f"{CONFIG['base_url']}/browse/{issue_key}")
     else:
         logging.error(f"Failed to retrieve changelog: {response.status_code}")
         logging.error(response.text)
-
+        
 ##############################
 # Project Management Functions
 ##############################
@@ -314,14 +362,14 @@ def is_project_running(project_key):
 # Core Processing Functions
 ###########################
 
-def worker(project_queue):
+def worker(project_queue, last_run_date):
     while not project_queue.empty():
         try:
             project_key = project_queue.get()
             logging.info(f"Processing project_key: {project_key}")
             if project_key not in PROCESSED_PROJECTS and not is_project_running(project_key):
                 add_to_running_projects(project_key)
-                process_issues(project_key)
+                process_issues(project_key, last_run_date)
                 append_to_csv(PROCESSED_PROJECTS_FILE, [project_key])
                 PROCESSED_PROJECTS.add(project_key)
                 remove_from_running_projects(project_key)
@@ -330,26 +378,14 @@ def worker(project_queue):
         finally:
             project_queue.task_done()
             
-def process_issues(project_key):
+def process_issues(project_key, last_run_date):
     start_at = 0
     max_results = 50
-    total_issues_count = 0  # This will store the total count of issues for logging
-
-    # Initial fetch to determine the total number of issues to process
-    try:
-        initial_url = f"{CONFIG['base_url']}/rest/api/3/search?jql=project=\'{project_key}\'&startAt=0&maxResults=1"
-        initial_response = requests.get(initial_url, auth=AUTH, headers=HEADERS)
-        initial_response.raise_for_status()
-        total_issues_count = initial_response.json().get('total', 0)
-        logging.info(f"Total issues to be processed for project {project_key}: {total_issues_count}")
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Failed to fetch initial issue data for project {project_key}: {e}")
-        return  # Exit the function if initial fetch fails
-
-    # Process all issues
+    jql_query = f"project=\'{project_key}\' AND (created >= \'{last_run_date.strftime('%Y-%m-%d %H:%M')}\' OR updated >= \'{last_run_date.strftime('%Y-%m-%d %H:%M')}\')"
+    
     while True:
         try:
-            issues_url = f"{CONFIG['base_url']}/rest/api/3/search?jql=project=\'{project_key}\'&startAt={start_at}&maxResults={max_results}"
+            issues_url = f"{CONFIG['base_url']}/rest/api/3/search?jql={jql_query}&startAt={start_at}&maxResults={max_results}"
             issues_response = requests.get(issues_url, auth=AUTH, headers=HEADERS)
             issues_response.raise_for_status()
             issues_data = issues_response.json()
@@ -360,7 +396,7 @@ def process_issues(project_key):
             for issue in issues_list:
                 issue_key = issue['key']
                 logging.info(f"Processing issue {issue_key} in project {project_key}")
-                
+
                 try:
                     description = issue['fields'].get('description', {})
                     process_descriptions(issue_key, description)
@@ -368,17 +404,17 @@ def process_issues(project_key):
                     logging.error(f"Failed to process description for issue {issue_key}: {e}")
 
                 try:
-                    process_comments(issue_key)
+                    process_comments(issue_key, last_run_date)
                 except Exception as e:
                     logging.error(f"Failed to process comments for issue {issue_key}: {e}")
 
                 try:
-                    process_attachments(issue_key)
+                    process_attachments(issue_key, last_run_date)
                 except Exception as e:
                     logging.error(f"Failed to process attachments for issue {issue_key}: {e}")
 
                 try:
-                    process_history(issue_key)
+                    process_history(issue_key, last_run_date)
                 except Exception as e:
                     logging.error(f"Failed to process history for issue {issue_key}: {e}")
 
@@ -389,9 +425,8 @@ def process_issues(project_key):
             # Consider whether to break or continue here depending on how critical the failure is
 
     logging.info(f"Finished processing all issues for project {project_key}")
-    
-    
-def process_projects(thread_count, project_keys=None):
+
+def process_projects(thread_count, project_keys=None, last_run_date=None):
     """Process a list of projects in parallel using threading."""
     start_time = time.time()
     project_queue = Queue()
@@ -406,7 +441,7 @@ def process_projects(thread_count, project_keys=None):
 
     threads = []
     for _ in range(thread_count):
-        thread = Thread(target=worker, args=(project_queue,))
+        thread = Thread(target=worker, args=(project_queue, last_run_date))
         threads.append(thread)
         thread.start()
 
@@ -418,6 +453,21 @@ def process_projects(thread_count, project_keys=None):
 
 # Example usage
 if __name__ == '__main__':
+
+    delete_file(LOG_FILE)
+    delete_file(PROCESSED_PROJECTS_FILE)
+    delete_file(RUNNING_PROJECTS_FILE)
+
+    last_run_date = read_last_run_date()
+    if last_run_date:
+        logging.info(f"Last run date: {last_run_date}")
+    else:
+        logging.info("No last run date found.")
+
     project_keys = load_project_keys()  
-    thread_count = 10  # Adjust thread count as needed
-    process_projects(thread_count, project_keys)
+    thread_count = 1  # Adjust thread count as needed
+    process_projects(thread_count, project_keys, last_run_date)
+
+    update_last_run_date()
+    delete_file(PROCESSED_PROJECTS_FILE)
+    delete_file(RUNNING_PROJECTS_FILE)
