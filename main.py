@@ -22,6 +22,7 @@ CONFIG = {
     'token' : "",  
     'base_url' : "https://<domain>.atlassian.net",
 }
+
 REGEX_PATTERNS_FILE = 'regex_patterns.csv'
 FALSE_POSITIVES = 'false_positive.txt'
 FOUND_ISSUES_FILE = 'found_issues.csv'
@@ -68,7 +69,14 @@ def download_attachment(download_url):
         try:
             response = session.get(download_url, auth=AUTH, headers=HEADERS, timeout=120)
             response.raise_for_status()  # Raises a HTTPError for bad responses
-            return response.content  # Use .content to fetch binary data if needed, or .text for text
+            content_type = response.headers.get('Content-Type')
+        
+            # If the content type is text, decode it, otherwise return the bytes
+            if 'text' in content_type:
+                return response.text  # Decodes using response encoding
+            else:
+                return response.content  # Return bytes for binary content
+
         except (requests.exceptions.RequestException, ProtocolError, IncompleteRead, ChunkedEncodingError) as e:
             logging.warning(f"Attempt {attempt + 1} failed with error: {e}")
             attempt += 1
@@ -134,6 +142,7 @@ def check_patterns(text, issue_key, type, url):
                 logging.warning(separator)
                 logging.warning(f"!!! ALERT: Found {rule_name} pattern in issue {issue_key} !!!")
                 logging.warning(separator)
+                
 def extract_text(content):
     full_text = ''
     for node in content['content']:
@@ -149,6 +158,16 @@ if not os.path.exists(PROCESSED_PROJECTS_FILE):
 ########################
 # Data Loading Functions
 ########################
+
+def delete_file(file_path):
+    """Delete a file if it exists."""
+    try:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            logging.info(f"Deleted file: {file_path}")
+    except Exception as e:
+        logging.error(f"Failed to delete file {file_path}: {e}")
+
 
 def load_false_positives(file_path='false_positive.txt'):
     false_positives = set()
@@ -242,7 +261,10 @@ def process_attachments(issue_key):
                 download_url = attachment['content']
                 file_content = download_attachment(download_url)
                 if file_content:
-                    check_patterns(file_content, issue_key, 'attachment', f"{CONFIG['base_url']}/browse/{issue_key}")
+                    try:
+                        check_patterns(file_content, issue_key, 'attachment', f"{CONFIG['base_url']}/browse/{issue_key}")
+                    except Exception as e:
+                        logging.error(f"Failed to check patterns for attachment in issue {issue_key}: {e}")
     except requests.exceptions.RequestException as e:
         logging.error(f"Failed to retrieve issue details for {issue_key}: {e}")
         if response:
@@ -334,11 +356,19 @@ def process_issues(project_key):
     start_at = 0
     max_results = 50
     total_issues_count = 0  # This will store the total count of issues for logging
+    
+    jql_query = f"project=\'{project_key}\'"
+    
+    issue_counter = 0
+    # First, get the total count of issues to be processed
+    count_url = f"{CONFIG['base_url']}/rest/api/3/search?jql={jql_query}&maxResults=0"
+    count_response = requests.get(count_url, auth=AUTH, headers=HEADERS)
+    total_issues = count_response.json().get('total', 0)
 
     # Initial fetch to determine the total number of issues to process
     try:
-        initial_url = f"{CONFIG['base_url']}/rest/api/3/search?jql=project=\'{project_key}\'&startAt=0&maxResults=1"
-        initial_response = requests.get(initial_url, auth=AUTH, headers=HEADERS)
+        issues_url = f"{CONFIG['base_url']}/rest/api/3/search?jql={jql_query}&startAt={start_at}&maxResults={max_results}"
+        initial_response = requests.get(issues_url, auth=AUTH, headers=HEADERS)
         initial_response.raise_for_status()
         total_issues_count = initial_response.json().get('total', 0)
         logging.info(f"Total issues to be processed for project {project_key}: {total_issues_count}")
@@ -359,7 +389,8 @@ def process_issues(project_key):
 
             for issue in issues_list:
                 issue_key = issue['key']
-                logging.info(f"Processing issue {issue_key} in project {project_key}")
+                issue_counter += 1
+                logging.info(f"Processing issue {issue_key} ({issue_counter} of {total_issues})")
                 
                 try:
                     description = issue['fields'].get('description', {})
@@ -393,7 +424,7 @@ def process_issues(project_key):
     
 def process_projects(thread_count, project_keys=None):
     """Process a list of projects in parallel using threading."""
-    start_time = time.time()
+
     project_queue = Queue()
 
     # Determine which projects to process
@@ -413,11 +444,21 @@ def process_projects(thread_count, project_keys=None):
     for thread in threads:
         thread.join()
 
-    end_time = time.time()
-    logging.info(f"Total time taken to process: {end_time - start_time:.3f} seconds")
-
 # Example usage
 if __name__ == '__main__':
+    
+    start_time = time.time()
+    
+    delete_file(LOG_FILE)
+    delete_file(PROCESSED_PROJECTS_FILE)
+    delete_file(RUNNING_PROJECTS_FILE)
+    
     project_keys = load_project_keys()  
     thread_count = 10  # Adjust thread count as needed
     process_projects(thread_count, project_keys)
+    
+    delete_file(PROCESSED_PROJECTS_FILE)
+    delete_file(RUNNING_PROJECTS_FILE)
+    
+    end_time = time.time()
+    logging.info(f"Total time taken to process: {end_time - start_time:.3f} seconds")
