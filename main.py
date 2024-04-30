@@ -87,8 +87,8 @@ def download_attachment(download_url):
             time.sleep(2)  # Wait 2 seconds before retrying
         except Exception as e:
             logging.error(f"Failed to download attachment from {download_url} after {max_attempts} attempts: {e}")
-            return None, None
-    return None, None
+            return None
+    return None
 
 def setup_retry_session(retries=3, backoff_factor=0.3, status_forcelist=(500, 502, 503, 504), allowed_exceptions=(ProtocolError, IncompleteRead)):
     """Set up a requests session with retry mechanism including ProtocolError."""
