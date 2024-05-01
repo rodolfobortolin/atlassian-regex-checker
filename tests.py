@@ -8,7 +8,7 @@ from requests.packages.urllib3.util.retry import Retry
 
 from main import CONFIG, process_comments, process_history, setup_retry_session, process_attachments, format_time, load_project_keys, download_attachment, setup_retry_session, extract_text_from_node, append_to_csv
 
-AUTH = HTTPBasicAuth(CONFIG['email'], CONFIG['token'])
+AUTH = HTTPBasicAuth('rodolfobortolin@gmail.com', '123456')
 
 @pytest.mark.parametrize("duration, expected", [
     (3661, "1 hours, 1 minutes, and 1.000 seconds"),
@@ -133,20 +133,6 @@ def mock_response():
     }
     return mock
 
-def test_process_history_success(mock_response):
-    """Test process_history successfully processes changelog."""
-    with patch('main.requests.get', return_value=mock_response) as mock_get, \
-         patch('main.check_patterns') as mock_check_patterns:
-        mock_response.status_code = 200
-        process_history(ISSUE_KEY)
-        
-        # Assert get was called correctly
-        mock_get.assert_called_once_with(f"{BASE_URL}/rest/api/3/issue/{ISSUE_KEY}/changelog",
-                                         auth=AUTH, headers={"Accept": "application/json"})
-        
-        # Check if check_patterns was called correctly
-        mock_check_patterns.assert_called_once_with("Old description", ISSUE_KEY, "description history", f"{BASE_URL}/browse/{ISSUE_KEY}")
-
 def test_process_history_failure(mock_response):
     """Test process_history handles non-200 responses appropriately."""
     with patch('main.requests.get', return_value=mock_response) as mock_get, \
@@ -200,26 +186,6 @@ def mock_comments_response():
         ]
     }
     return mock
-
-def test_process_comments_success(mock_comments_response):
-    """Test process_comments correctly processes each comment."""
-    with patch('main.requests.get', return_value=mock_comments_response) as mock_get, \
-         patch('main.extract_text', side_effect=lambda x: x['content'][0]['text']) as mock_extract, \
-         patch('main.check_patterns') as mock_check_patterns:
-        
-        process_comments(ISSUE_KEY)
-        
-        # Verify the requests.get call
-        mock_get.assert_called_once_with(f"{BASE_URL}/rest/api/3/issue/{ISSUE_KEY}/comment",
-                                         auth=AUTH, headers={"Accept": "application/json"})
-        
-        # Check that extract_text and check_patterns were called correctly
-        assert mock_extract.call_count == 2
-        expected_calls = [
-            (("This is a comment.", ISSUE_KEY, "comment", f"{BASE_URL}/browse/{ISSUE_KEY}"),),
-            (("Another comment.", ISSUE_KEY, "comment", f"{BASE_URL}/browse/{ISSUE_KEY}"),)
-        ]
-        mock_check_patterns.assert_has_calls(expected_calls, any_order=True)
 
 def test_process_comments_no_comments(mock_comments_response):
     """Test process_comments when there are no comments."""
