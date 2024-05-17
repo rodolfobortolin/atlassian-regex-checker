@@ -2,6 +2,9 @@
 repositories
 false*
 skipped*
+jira_found_issues.csv
+*.log
+*.txt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
