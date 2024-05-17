@@ -484,4 +484,3 @@ if __name__ == '__main__':
     
     end_time = time.time()
     logging.info(f"Total time taken to process: {format_time(end_time - start_time)}")
-

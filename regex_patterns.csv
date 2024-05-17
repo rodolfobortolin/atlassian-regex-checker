@@ -1,0 +1,6 @@
+Rule Name,Regular Expression
+AWS_CLIENT_ID,A(?:BIA|CCA|GPA|IDA|IPA|KIA|NPA|NVA|PKA|ROA|SCA|SIA|3T[A-Z0-9])[A-Z0-9]{16}
+AWS_MWS_KEY,amzn\.mws\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
+AWS_SECRET_ACCESS_KEY,"(?i)aws.{0,20}?(?-i)[^0-9a-zA-Z/+!@#$%^&*]([0-9a-zA-Z/+]{40})(?=[^0-9a-zA-Z/+!@#$%^&*]|$)"
+RSA_PRIVATE_KEY,-----BEGIN RSA PRIVATE KEY-----
+SSH_PRIVATE_KEY,-----BEGIN OPENSSH PRIVATE KEY-----

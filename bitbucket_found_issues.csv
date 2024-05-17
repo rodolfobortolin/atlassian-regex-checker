@@ -1,0 +1,3 @@
+clientes.html,RSA_PRIVATE_KEY,file://repositories\mlv-web-site\clientes.html
+certs\atlassian.pem,RSA_PRIVATE_KEY,file://repositories\terraform-atlassian\certs\atlassian.pem
+certs\e-core-rodolfo.pem,RSA_PRIVATE_KEY,file://repositories\terraform-atlassian\certs\e-core-rodolfo.pem
