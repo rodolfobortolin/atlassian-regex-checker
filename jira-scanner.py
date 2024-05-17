@@ -24,11 +24,11 @@ CONFIG = {
 }
 
 REGEX_PATTERNS_FILE = 'regex_patterns.csv'
-FALSE_POSITIVES = 'false_positive.txt'
-FOUND_ISSUES_FILE = 'found_issues.csv'
-RUNNING_PROJECTS_FILE = 'running_projects.txt'
-LOG_FILE = 'application.log'
-PROCESSED_PROJECTS_FILE = 'processed_projects.csv'
+FALSE_POSITIVES = 'jira_false_positive.txt'
+FOUND_ISSUES_FILE = 'jira_found_issues.csv'
+RUNNING_PROJECTS_FILE = 'jira_running_projects.txt'
+LOG_FILE = 'jira_application.log'
+PROCESSED_PROJECTS_FILE = 'jira_processed_projects.csv'
 
 AUTH = HTTPBasicAuth(CONFIG['email'], CONFIG['token'])
 HEADERS = {"Accept": "application/json"}
