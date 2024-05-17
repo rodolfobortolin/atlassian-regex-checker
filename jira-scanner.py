@@ -11,7 +11,7 @@ from queue import Queue
 from requests.exceptions import ChunkedEncodingError
 from requests.adapters import HTTPAdapter
 from urllib3.exceptions import ProtocolError
-from requests.packages.urllib3.util.retry import Retry
+from requests import Retry
 
 ########################
 # Configurations
