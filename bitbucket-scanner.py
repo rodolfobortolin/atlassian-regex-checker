@@ -80,10 +80,10 @@ skipped_extensions = set()
 # Logging Setup
 ########################
 
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s: %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s: %(message)s')
 logger = logging.getLogger()
 file_handler = logging.FileHandler(LOG_FILE)
-file_handler.setLevel(logging.DEBUG)
+file_handler.setLevel(logging.INFO)
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s: %(message)s'))
 logger.addHandler(file_handler)
 
@@ -206,16 +206,43 @@ REGEX_PATTERNS = load_regex_patterns(os.path.join(os.getcwd(), REGEX_PATTERNS_FI
 ##############################
 
 def fetch_all_repositories():
-    """Fetch all repositories from Bitbucket."""
+    """Fetch all repositories from Bitbucket with pagination and log details."""
     url = f"{CONFIG['base_url']}/repositories/{CONFIG['workspace']}"
+    repositories = []
     try:
-        response = requests.get(url, auth=AUTH, headers=HEADERS)
-        response.raise_for_status()
-        repositories = response.json()
-        return [repo['slug'] for repo in repositories['values']]
+        while url:
+            response = requests.get(url, auth=AUTH, headers=HEADERS)
+            response.raise_for_status()
+            data = response.json()
+            page_repositories = [repo['slug'] for repo in data['values']]
+            repositories.extend(page_repositories)
+            logging.info(f"Fetched {len(page_repositories)} repositories: {page_repositories}")
+            url = data.get('next')  # Get the URL for the next page of results
+
+        logging.info(f"Total repositories fetched: {len(repositories)}")
     except requests.exceptions.RequestException as e:
         logging.error(f"Failed to fetch repositories from Bitbucket: {e}")
-        return []
+    return repositories
+
+def fetch_all_branches(repo_slug):
+    """Fetch all branches for a repository from Bitbucket with pagination and log details."""
+    url = f"{CONFIG['base_url']}/repositories/{CONFIG['workspace']}/{repo_slug}/refs/branches"
+    branches = []
+    try:
+        while url:
+            response = requests.get(url, auth=AUTH, headers=HEADERS)
+            response.raise_for_status()
+            data = response.json()
+            page_branches = [branch['name'] for branch in data['values']]
+            branches.extend(page_branches)
+            logging.info(f"Fetched {len(page_branches)} branches from repository '{repo_slug}': {page_branches}")
+            url = data.get('next')  # Get the URL for the next page of results
+
+        logging.info(f">>>>>>> Total branches fetched for repository '{repo_slug}': {len(branches)}")
+
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Failed to fetch branches for repository {repo_slug} from Bitbucket: {e}")
+    return branches
 
 def run_command(command, cwd=None):
     """Execute a system command with optional working directory."""
@@ -243,7 +270,12 @@ def clone_and_process_repo(repo_slug):
         pull_command = "git pull"
         run_command(pull_command, cwd=repo_folder)
 
-    process_files_recursive_local(repo_folder)
+    branches = fetch_all_branches(repo_slug)
+    for branch in branches:
+        checkout_command = f"git checkout {branch}"
+        run_command(checkout_command, cwd=repo_folder)
+        process_files_recursive_local(repo_folder)
+    
     time.sleep(1)  # Ensure all file handles are released
     delete_repository_folder(repo_folder)
 
