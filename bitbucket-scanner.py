@@ -9,6 +9,9 @@ from requests.auth import HTTPBasicAuth
 import requests
 import shutil
 import time
+import stat
+import pprint
+from datetime import datetime, timezone
 
 ########################
 # Configurations
@@ -20,6 +23,9 @@ CONFIG = {
     'base_url': "https://api.bitbucket.org/2.0",
     'workspace': '',
 }
+
+# Specify the date you want to filter by
+before_date = '2023-01-01'
 
 password_file_extensions = [
     # Text and log files
@@ -90,6 +96,23 @@ logger.addHandler(file_handler)
 ########################
 # Utility Functions
 ########################
+
+def delete_repositories_folder():
+    """Delete the repositories folder before starting the processing."""
+    repo_folder = 'repositories'
+    try:
+        if os.path.exists(repo_folder):
+            # Change the permissions of all files in the directory to ensure they can be deleted
+            for root, dirs, files in os.walk(repo_folder):
+                for dir in dirs:
+                    os.chmod(os.path.join(root, dir), stat.S_IWUSR)
+                for file in files:
+                    os.chmod(os.path.join(root, file), stat.S_IWUSR)
+
+            shutil.rmtree(repo_folder, ignore_errors=True)
+            logging.info(f"Deleted repositories folder: {repo_folder}")
+    except Exception as e:
+        logging.error(f"Failed to delete and recreate repositories folder {repo_folder}: {e}")
 
 def format_time(duration):
     hours, remainder = divmod(duration, 3600)
@@ -205,24 +228,54 @@ REGEX_PATTERNS = load_regex_patterns(os.path.join(os.getcwd(), REGEX_PATTERNS_FI
 # API Interaction Functions
 ##############################
 
-def fetch_all_repositories():
-    """Fetch all repositories from Bitbucket with pagination and log details."""
+def fetch_all_repositories(before_date=None):
+    """Fetch all repositories from Bitbucket with pagination and log details, filtering by update date."""
     url = f"{CONFIG['base_url']}/repositories/{CONFIG['workspace']}"
     repositories = []
+    
+    # Parse the before_date if provided and make it offset-aware
+    if before_date:
+        before_date_parsed = datetime.strptime(before_date, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+    else:
+        before_date_parsed = None
+    
     try:
         while url:
             response = requests.get(url, auth=AUTH, headers=HEADERS)
             response.raise_for_status()
             data = response.json()
-            page_repositories = [repo['slug'] for repo in data['values']]
-            repositories.extend(page_repositories)
-            logging.info(f"Fetched {len(page_repositories)} repositories: {page_repositories}")
+            for repo in data['values']:
+                updated_on_str = repo.get("updated_on", "")
+                updated_on = datetime.strptime(updated_on_str, '%Y-%m-%dT%H:%M:%S.%f%z')
+                
+                if before_date_parsed and updated_on >= before_date_parsed:
+                    continue
+
+                size_in_mb = repo.get("size", 0) / (1024 * 1024)  # Convert size to MB
+
+                repo_info = {
+                    "name": repo.get("name", ""),
+                    "full_name": repo.get("full_name", ""),
+                    "description": repo.get("description", ""),
+                    "created_on": repo.get("created_on", ""),
+                    "updated_on": repo.get("updated_on", ""),
+                    "size": f"{size_in_mb:.2f} MB",  # Format size as MB with 2 decimal places
+                    "language": repo.get("language", ""),
+                    "fork_policy": repo.get("fork_policy", ""),
+                    "project": repo['project']['name'],
+                    "onwer": repo['owner']['display_name'],
+                    "mainbranch": repo.get("mainbranch", {}).get("type", "")
+                }
+                repositories.append(repo['slug'])
+                pretty_repo_info = pprint.pformat(repo_info, indent=4)
+                logging.info(f"Repository info:\n\n{pretty_repo_info}\n\n")
             url = data.get('next')  # Get the URL for the next page of results
 
         logging.info(f"Total repositories fetched: {len(repositories)}")
     except requests.exceptions.RequestException as e:
         logging.error(f"Failed to fetch repositories from Bitbucket: {e}")
     return repositories
+
 
 def fetch_all_branches(repo_slug):
     """Fetch all branches for a repository from Bitbucket with pagination and log details."""
@@ -385,11 +438,13 @@ def process_repositories(thread_count, repo_slugs=None):
 if __name__ == '__main__':
     start_time = time.time()
 
+    delete_repositories_folder()
     delete_file(LOG_FILE)
     delete_file(PROCESSED_REPOSITORIES_FILE)
     delete_file(RUNNING_REPOSITORIES_FILE)
+    
+    repo_slugs = fetch_all_repositories(before_date)
 
-    repo_slugs = load_repository_keys()
     thread_count = 1
     process_repositories(thread_count, repo_slugs)
 
@@ -401,6 +456,6 @@ if __name__ == '__main__':
     end_time = time.time()
     logging.info(f"Total time taken to process: {format_time(end_time - start_time)}")
 
-    delete_file(SKIPPED_EXTENSIONS_FILE)
+    #delete_file(SKIPPED_EXTENSIONS_FILE)
     delete_file(PROCESSED_REPOSITORIES_FILE)
     delete_file(RUNNING_REPOSITORIES_FILE)
