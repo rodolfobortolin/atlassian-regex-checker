@@ -144,7 +144,7 @@ def append_to_csv(file_name, row):
     except Exception as e:
         logging.error(f"Failed to write to file '{file_name}': {e}")
 
-def check_patterns(text, file_path, url):
+def check_patterns(text, file_path, url, branch):
     false_positives = load_false_positives()
     if file_path in false_positives:
         logging.info(f"File {file_path} is marked as a false positive and will not be processed.")
@@ -157,17 +157,24 @@ def check_patterns(text, file_path, url):
                 for rule_name, pattern in REGEX_PATTERNS:
                     if re.search(pattern, text):
                         separator = "*" * 50
-                        append_to_csv(FOUND_ISSUES_FILE, [file_path, rule_name, url])
+                        append_to_csv(FOUND_ISSUES_FILE, [file_path, rule_name, url, branch])
                         logging.warning(separator)
                         logging.warning(f"!!! ALERT: Found {rule_name} pattern in file {file_path} !!!")
                         logging.warning(separator)
             except Exception as e:
                 logging.warning(f"Failed to check file {file_path}: {e}")
 
+
 if not os.path.exists(PROCESSED_REPOSITORIES_FILE):
     with open(PROCESSED_REPOSITORIES_FILE, mode='w', newline='') as file:
         writer = csv.writer(file)
-        writer.writerow(['Repository'])
+        writer.writerow(['Repository', 'Branch'])
+
+if not os.path.exists(FOUND_ISSUES_FILE):
+    with open(FOUND_ISSUES_FILE, mode='w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(['File Path', 'Rule Name', 'URL', 'Branch'])
+
 
 ############################
 # Data Loading Functions
@@ -326,12 +333,12 @@ def clone_and_process_repo(repo_slug):
     for branch in branches:
         checkout_command = f"git checkout {branch}"
         run_command(checkout_command, cwd=repo_folder)
-        process_files_recursive_local(repo_folder)
+        process_files_recursive_local(repo_folder, branch)
     
     time.sleep(1)  # Ensure all file handles are released
     delete_repository_folder(repo_folder)
 
-def process_files_recursive_local(repo_folder, path=""):
+def process_files_recursive_local(repo_folder, branch, path=""):
     """Recursively fetch and process files from a local repository."""
     full_path = os.path.join(repo_folder, path)
     try:
@@ -346,7 +353,7 @@ def process_files_recursive_local(repo_folder, path=""):
                         file_content = f.read()
                         if file_content:
                             try:
-                                check_patterns(file_content, file_path, f"file://{os.path.join(root, file)}")
+                                check_patterns(file_content, file_path, f"file://{os.path.join(root, file)}", branch)
                             except Exception as e:
                                 logging.error(f"Failed to check patterns for file {file_path}: {e}")
                 else: 
@@ -355,6 +362,7 @@ def process_files_recursive_local(repo_folder, path=""):
                 
     except Exception as e:
         logging.error(f"Failed to process files in repository at path {full_path}: {e}")
+
 
 def delete_repository_folder(repo_folder):
     """Delete the local repository folder."""
