@@ -352,14 +352,17 @@ def process_files_recursive_local(repo_folder, branch, path=""):
                     with open(os.path.join(root, file), 'rb') as f:
                         file_content = f.read()
                         if file_content:
+                            # Check if "password=" or "password=${" is in the file content and skip if found
+                            if b"password=${" in file_content:
+                                logging.info(f"Skipping file due to 'password=${{' presence: {file_path}")
+                                continue
                             try:
                                 check_patterns(file_content, file_path, f"file://{os.path.join(root, file)}", branch)
                             except Exception as e:
                                 logging.error(f"Failed to check patterns for file {file_path}: {e}")
-                else: 
+                else:
                     logging.debug(f"Skipping file: {file_path}")
                     skipped_extensions.add(os.path.splitext(file_path)[1].lower())
-                
     except Exception as e:
         logging.error(f"Failed to process files in repository at path {full_path}: {e}")
 
