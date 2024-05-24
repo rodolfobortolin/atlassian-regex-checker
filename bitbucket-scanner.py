@@ -25,7 +25,7 @@ CONFIG = {
 }
 
 # Specify the date you want to filter by
-before_date = '2023-01-01'
+before_date = '2024-05-17'
 
 password_file_extensions = [
     # Text and log files
@@ -248,27 +248,26 @@ def fetch_all_repositories(before_date=None):
                 updated_on_str = repo.get("updated_on", "")
                 updated_on = datetime.strptime(updated_on_str, '%Y-%m-%dT%H:%M:%S.%f%z')
                 
-                if before_date_parsed and updated_on >= before_date_parsed:
-                    continue
+                if updated_on >= before_date_parsed:
 
-                size_in_mb = repo.get("size", 0) / (1024 * 1024)  # Convert size to MB
+                    size_in_mb = repo.get("size", 0) / (1024 * 1024)  # Convert size to MB
 
-                repo_info = {
-                    "name": repo.get("name", ""),
-                    "full_name": repo.get("full_name", ""),
-                    "description": repo.get("description", ""),
-                    "created_on": repo.get("created_on", ""),
-                    "updated_on": repo.get("updated_on", ""),
-                    "size": f"{size_in_mb:.2f} MB",  # Format size as MB with 2 decimal places
-                    "language": repo.get("language", ""),
-                    "fork_policy": repo.get("fork_policy", ""),
-                    "project": repo['project']['name'],
-                    "onwer": repo['owner']['display_name'],
-                    "mainbranch": repo.get("mainbranch", {}).get("type", "")
-                }
-                repositories.append(repo['slug'])
-                pretty_repo_info = pprint.pformat(repo_info, indent=4)
-                logging.info(f"Repository info:\n\n{pretty_repo_info}\n\n")
+                    repo_info = {
+                        "name": repo.get("name", ""),
+                        "full_name": repo.get("full_name", ""),
+                        "description": repo.get("description", ""),
+                        "created_on": repo.get("created_on", ""),
+                        "updated_on": repo.get("updated_on", ""),
+                        "size": f"{size_in_mb:.2f} MB",  # Format size as MB with 2 decimal places
+                        "language": repo.get("language", ""),
+                        "fork_policy": repo.get("fork_policy", ""),
+                        "project": repo['project']['name'],
+                        "onwer": repo['owner']['display_name'],
+                        "mainbranch": repo.get("mainbranch", {}).get("type", "")
+                    }
+                    repositories.append(repo['slug'])
+                    pretty_repo_info = pprint.pformat(repo_info, indent=4)
+                    logging.info(f"Repository info:\n\n{pretty_repo_info}\n\n")
             url = data.get('next')  # Get the URL for the next page of results
 
         logging.info(f"Total repositories fetched: {len(repositories)}")
