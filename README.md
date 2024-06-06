@@ -1,43 +1,46 @@
-## Jira Issue Processing Script Usage Guide
 
-This guide explains how to use a Python script designed to interface with a Jira  to process issues across projects. It identifies certain patterns within issue descriptions and comments and logs these findings.
+# Repository Usage Guide
 
-### Saving Processed Projects
-The script maintains a record of processed projects in a file named `processed_projects.csv`. If the script is interrupted, it won't reprocess the projects listed in this file when restarted.
+This repository contains various scripts to automate tasks related to Jira and Bitbucket. The current scripts include:
 
-### Install regex Python module
+1. **Jira Scanner Script**: Identifies patterns in Jira issue descriptions and comments.
+2. **Bitbucket Scanner Script**: Checks for regex patterns within Bitbucket repositories.
+
+## Setup
+
+### Install Required Python Modules
+Install the necessary Python modules using pip:
 ```bash
-pip install regex, urllib3
+pip install regex urllib3 requests
 ```
+
+## Jira Scanner Script
+
+### Overview
+This script interfaces with a Jira instance to process issues across projects. It identifies specific patterns within issue descriptions, comments, and attachments and logs these findings.
 
 ### Configuration
-You'll need to provide the following configurations in the `config` dictionary within the script:
+Provide the following configurations in the `CONFIG` dictionary within the script:
 
 ```python
-config = {
+CONFIG = {
     'email': 'your-email@example.com',  # Replace with your Jira email
-    'token': 'your-api-token-or-passoword',  # Replace with your Jira API token (if Cloud) or your user Password (if Data Center)
-    'base_url': 'http://your-jira-instance:port',  # Replace with your Jira instance URL
-    'api_version': 2  # API version of your Jira instance (leave 2 if server, 3 if cloud
+    'token': 'your-api-token-or-password',  # Replace with your Jira API token (Cloud) or password (Data Center)
+    'base_url': 'https://<domain>.atlassian.net'  # Replace with your Jira instance URL
 }
-
-env = 'server' # change to cloud if the script will run in Jira Cloud
-
 ```
 
-## Managing Active Projects
+### Managing Active Projects
+The script manages currently running projects using `jira_running_projects.txt`:
+- **Addition**: Project key is added when a project starts.
+- **Removal**: Project key is removed when the project ends.
+- **Check**: Ensures a project is not reprocessed if already active.
 
-The script includes a mechanism to manage currently running projects using a file named running_projects.txt:
+### Saving Processed Projects
+The script records processed projects in `jira_processed_projects.csv`. Projects listed here will not be reprocessed if the script restarts.
 
-- Addition: When a project starts, its key is added to running_projects.txt.
-- Removal: Once the project is no longer active, its key is removed from the file.
-- Check: Before processing, the script checks if a project is listed as active to avoid reprocessing.
-
-## Saving Processed Projects
-The script maintains a record of processed projects in a file named processed_projects.csv. Projects are added to this file after they have been processed. If the script is interrupted, it won't reprocess the projects listed in this file when restarted.
-
-### Defining REGEX_PATTERNS
-Define your own regex patterns to search within issue descriptions and comments. Add them to the `regex_patterns.csv`:
+### Defining Regex Patterns
+Add your regex patterns to `regex_patterns.csv`:
 
 ```csv
 Rule Name,Regular Expression
@@ -48,23 +51,68 @@ RSA_PRIVATE_KEY,-----BEGIN RSA PRIVATE KEY-----
 SSH_PRIVATE_KEY,-----BEGIN OPENSSH PRIVATE KEY-----
 ```
 
-### found_issues.csv Contents
-The script will record the findings in `found_issues.csv`, with each row containing:
+### Logging Findings
+The script logs findings in `jira_found_issues.csv`, including:
+- `ISSUE_KEY`: Jira issue key
+- `TYPE`: Location of the pattern (`description`, `comment`, or `attachment`)
+- `URL`: URL to the Jira issue
 
-- `ISSUE_KEY`: The key of the Jira issue
-- `TYPE`: Where the pattern was found (`"description"` or `"comment"`)
-- `URL`: The URL to the Jira issue
-
-Example CSV output:
-
+Example:
 ```csv
 ISSUE_KEY, TYPE, URL
 EXAMPLE-123, description, http://your-jira-instance:port/browse/EXAMPLE-123
 ```
 
 ### Execution
-Run the script from the command line as follows (after all configurations are set within the script):
-
+Run the script:
 ```shell
-python script_name.py  # Replace with the actual file name of the script
+python jira-scanner.py  # Replace with the actual script name
+```
+
+## Bitbucket Scanner Script
+
+### Overview
+This script checks for specified regex patterns within Bitbucket repositories.
+
+### Configuration
+Provide the following configurations in the `CONFIG` dictionary within the script:
+
+```python
+CONFIG = {
+    'username': 'your-username',  # Replace with your Bitbucket username
+    'token': 'your-app-password',  # Replace with your Bitbucket app password
+    'base_url': 'https://api.bitbucket.org/2.0',
+    'workspace': 'your-workspace'  # Replace with your Bitbucket workspace ID
+}
+```
+
+### Defining Regex Patterns
+Add your regex patterns to `regex_patterns.csv`:
+
+```csv
+Rule Name,Regular Expression
+AWS_CLIENT_ID,A(?:BIA|CCA|GPA|IDA|IPA|KIA|NPA|NVA|PKA|ROA|SCA|SIA|3T[A-Z0-9])[A-Z0-9]{16}
+AWS_MWS_KEY,amzn\.mws\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
+AWS_SECRET_ACCESS_KEY,"(?i)aws.{0,20}?(?-i)[^0-9a-zA-Z/+!@#$%^&*]([0-9a-zA-Z/+]{40})(?=[^0-9a-zA-Z/+!@#$%^&*]|$)"
+RSA_PRIVATE_KEY,-----BEGIN RSA PRIVATE KEY-----
+SSH_PRIVATE_KEY,-----BEGIN OPENSSH PRIVATE KEY-----
+```
+
+### Logging Findings
+The script logs findings in `bitbucket_found_issues.csv`, including:
+- `File Path`: Path of the file in the repository
+- `Rule Name`: Name of the regex rule matched
+- `URL`: URL to the file in the repository
+- `Branch`: Branch in which the file was found
+
+Example:
+```csv
+File Path, Rule Name, URL, Branch
+example/path/file.txt, AWS_CLIENT_ID, https://bitbucket.org/your-workspace/repo-name/src/branch/path/to/file.txt, main
+```
+
+### Execution
+Run the script:
+```shell
+python bitbucket-scanner.py  # Replace with the actual script name
 ```
