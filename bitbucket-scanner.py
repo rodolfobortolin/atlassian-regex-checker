@@ -13,19 +13,15 @@ import stat
 import pprint
 from datetime import datetime, timezone
 
-########################
-# Configurations
-########################
-
-CONFIG = {
+# Configuration for authorization and base URL
+CONFIG  = {
     'username': '',
     'token': '',
     'base_url': "https://api.bitbucket.org/2.0",
     'workspace': '',
+    'check_branches': False,  # Toggle for branch checking
+    'before_date' : '2023-05-17' # Specify the date you want to filter by
 }
-
-# Specify the date you want to filter by
-before_date = '2024-05-17'
 
 password_file_extensions = [
     # Text and log files
@@ -175,10 +171,20 @@ if not os.path.exists(FOUND_ISSUES_FILE):
         writer = csv.writer(file)
         writer.writerow(['File Path', 'Rule Name', 'URL', 'Branch'])
 
-
 ############################
 # Data Loading Functions
 ############################
+
+def load_repositories_slugs(file_path='repositories.txt'):
+    try:
+        with open(file_path, 'r') as file:
+            return [line.strip() for line in file if line.strip()]
+    except FileNotFoundError:
+        logging.error(f"File not found: {file_path}")
+        return []
+    except Exception as e:
+        logging.error(f"Failed to read project keys from {file_path}: {e}")
+        return []
 
 def delete_file(file_path):
     try:
@@ -235,28 +241,30 @@ REGEX_PATTERNS = load_regex_patterns(os.path.join(os.getcwd(), REGEX_PATTERNS_FI
 # API Interaction Functions
 ##############################
 
-def fetch_all_repositories(before_date=None):
+def fetch_all_repositories(before_date=None, repo_slugs=None):
     """Fetch all repositories from Bitbucket with pagination and log details, filtering by update date."""
     url = f"{CONFIG['base_url']}/repositories/{CONFIG['workspace']}"
     repositories = []
-    
+
     # Parse the before_date if provided and make it offset-aware
     if before_date:
         before_date_parsed = datetime.strptime(before_date, '%Y-%m-%d').replace(tzinfo=timezone.utc)
     else:
         before_date_parsed = None
-    
+
     try:
         while url:
             response = requests.get(url, auth=AUTH, headers=HEADERS)
             response.raise_for_status()
             data = response.json()
             for repo in data['values']:
+                if repo_slugs and repo['slug'] not in repo_slugs:
+                    continue  # Skip repositories not in the provided list
+
                 updated_on_str = repo.get("updated_on", "")
                 updated_on = datetime.strptime(updated_on_str, '%Y-%m-%dT%H:%M:%S.%f%z')
-                
-                if updated_on >= before_date_parsed:
 
+                if not before_date_parsed or updated_on >= before_date_parsed:
                     size_in_mb = repo.get("size", 0) / (1024 * 1024)  # Convert size to MB
 
                     repo_info = {
@@ -269,7 +277,7 @@ def fetch_all_repositories(before_date=None):
                         "language": repo.get("language", ""),
                         "fork_policy": repo.get("fork_policy", ""),
                         "project": repo['project']['name'],
-                        "onwer": repo['owner']['display_name'],
+                        "owner": repo['owner']['display_name'],
                         "mainbranch": repo.get("mainbranch", {}).get("type", "")
                     }
                     repositories.append(repo['slug'])
@@ -329,16 +337,19 @@ def clone_and_process_repo(repo_slug):
         pull_command = "git pull"
         run_command(pull_command, cwd=repo_folder)
 
-    branches = fetch_all_branches(repo_slug)
-    for branch in branches:
-        checkout_command = f"git checkout {branch}"
-        run_command(checkout_command, cwd=repo_folder)
-        process_files_recursive_local(repo_folder, branch)
-    
+    if(CONFIG['check_branches']):
+        branches = fetch_all_branches(repo_slug)
+        for branch in branches:
+            checkout_command = f"git checkout {branch}"
+            run_command(checkout_command, cwd=repo_folder)
+            process_files_recursive_local(repo_folder, branch)
+    else: 
+        process_files_recursive_local(repo_folder, "main branch")
+
     time.sleep(1)  # Ensure all file handles are released
     delete_repository_folder(repo_folder)
 
-def process_files_recursive_local(repo_folder, branch, path=""):
+def process_files_recursive_local(repo_folder, branch="", path=""):
     """Recursively fetch and process files from a local repository."""
     full_path = os.path.join(repo_folder, path)
     try:
@@ -444,7 +455,7 @@ def process_repositories(thread_count, repo_slugs=None):
     for thread in threads:
         thread.join()
 
-# Example usage
+
 if __name__ == '__main__':
     start_time = time.time()
 
@@ -453,10 +464,10 @@ if __name__ == '__main__':
     delete_file(PROCESSED_REPOSITORIES_FILE)
     delete_file(RUNNING_REPOSITORIES_FILE)
     
-    repo_slugs = fetch_all_repositories(before_date)
+    fetched_repositories = fetch_all_repositories(before_date=CONFIG['before_date'], repo_slugs=load_repositories_slugs())
 
     thread_count = 1
-    process_repositories(thread_count, repo_slugs)
+    process_repositories(thread_count, fetched_repositories)
 
     # Write skipped extensions to file
     with open(SKIPPED_EXTENSIONS_FILE, 'w') as f:
